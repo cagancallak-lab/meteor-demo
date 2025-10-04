@@ -30,6 +30,31 @@ class App {
     this.paused = false;
     this.impactCount = 0;
     this.showAiming = true;
+    this.showAtmosphere = true;
+    this.showMoon = true;
+    this.showGravityViz = false;
+    this.enableExplosions = true;
+    this.lastMeteorData = null;
+    this.cameraFocus = 'free'; // 'free', 'earth', 'moon', 'meteor'
+    this.focusedMeteor = null;
+    this.gravityVisualizers = [];
+    this.explosionEffects = [];
+    this.trajectoryLines = [];
+    this.simulationStartTime = Date.now();
+    this.lastUpdateTime = Date.now();
+    
+    // Statistics tracking
+    this.totalImpactEnergy = 0;
+    this.largestImpactEnergy = 0;
+    this.impactCount = 0;
+    this.frameCount = 0;
+    this.lastFpsTime = Date.now();
+    this.currentFps = 60;
+    
+    // Map tracking
+    this.impactLocations = [];
+    this.mapCanvas = null;
+    this.mapCtx = null;
 
     // physics
     this.G = 6.67430e-11;
@@ -41,8 +66,6 @@ class App {
   // Visual scaling factor for meteors (multiplies the scene scale conversion so meteors are visible)
   // Increase if meteors appear too small. This does not change physics, only mesh size.
   this.meteorVisualScale = 2000;
-  // enlarge meteors for visibility
-  this.meteorVisualScale = 6000;
 
     this.mouse = new THREE.Vector2();
     this.raycaster = new THREE.Raycaster();
@@ -52,6 +75,7 @@ class App {
     this.predictedImpactMarker = null;
     // camera framing state for smooth on-spawn framing
     this.cameraFrame = { active: false };
+    this._lastFrameTime = null;
     // camera shake state
     this.cameraShake = { amplitude: 0, decay: 0.95, frequency: 20, time: 0 };
   }
@@ -132,7 +156,7 @@ class App {
 
   init() {
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 10000);
     this.camera.position.set(0, 3, 15);
     this.scene.add(this.camera);
 
@@ -177,6 +201,29 @@ class App {
   this.earth = new THREE.Mesh(earthGeo, earthMat);
   this.scene.add(this.earth);
   this.createLabel('Earth', new THREE.Vector3(0, this.earthRadius + 0.2, 0));
+
+    // Atmosphere visualization
+    const atmosphereGeo = new THREE.SphereGeometry(this.earthRadius + this.atmosphereHeightScene, 32, 32);
+    const atmosphereMat = new THREE.MeshBasicMaterial({ 
+      color: 0x87CEEB, 
+      transparent: true, 
+      opacity: 0.1,
+      side: THREE.BackSide
+    });
+    const atmosphere = new THREE.Mesh(atmosphereGeo, atmosphereMat);
+    atmosphere.name = 'atmosphere';
+    this.scene.add(atmosphere);
+
+    // Moon
+    const moonGeo = new THREE.SphereGeometry(this.moonRadius, 16, 16);
+    const moonMat = new THREE.MeshPhongMaterial({ color: 0xcccccc, roughness: 0.8 });
+    const moon = new THREE.Mesh(moonGeo, moonMat);
+    moon.name = 'moon';
+    moon.position.set(this.moonDistance, 0, 0);
+    this.scene.add(moon);
+    this.createLabel('Moon', new THREE.Vector3(this.moonDistance + this.moonRadius + 0.2, 0, 0));
+
+    // Earth-Moon system is already created above
 
   // Lighting: ambient + hemisphere + directional (sun) — but we do not add a visible Sun mesh
   this.scene.add(new THREE.AmbientLight(0xffffff, 0.28));
@@ -239,16 +286,16 @@ class App {
 
     // wire basic UI elements safely
     const el = id => document.getElementById(id);
-  // play click sound on any UI button press
-  document.addEventListener('click', (ev)=>{ if(ev.target && ev.target.tagName === 'BUTTON') this.playClick(); });
-    if (el('simSpeed')) el('simSpeed').oninput = (e) => { this.simSpeed = parseFloat(e.target.value); if (el('simSpeedVal')) el('simSpeedVal').innerText = parseFloat(e.target.value).toFixed(2); };
-    if (el('speed')) { const s = el('speed'); if (el('speedVal')) el('speedVal').innerText = s.value; s.oninput = (e) => { if (el('speedVal')) el('speedVal').innerText = parseFloat(e.target.value).toFixed(2); }; }
-  // meteor size slider
-  if (el('meteorSize')) { const ms = el('meteorSize'); if (el('meteorSizeVal')) el('meteorSizeVal').innerText = parseFloat(ms.value).toFixed(2); ms.oninput = (e) => { if (el('meteorSizeVal')) el('meteorSizeVal').innerText = parseFloat(e.target.value).toFixed(2); }; }
+    if (el('simSpeed')) el('simSpeed').oninput = (e) => { this.simSpeed = parseFloat(e.target.value); if (el('simSpeedVal')) el('simSpeedVal').innerText = parseFloat(e.target.value).toFixed(2); if (el('simSpeedInput')) el('simSpeedInput').value = this.simSpeed; };
+    if (el('simSpeedInput')) el('simSpeedInput').oninput = (e) => { this.simSpeed = Math.max(0.01, Math.min(1000, parseFloat(e.target.value) || 1)); if (el('simSpeed')) el('simSpeed').value = this.simSpeed; if (el('simSpeedVal')) el('simSpeedVal').innerText = this.simSpeed.toFixed(2); };
+    if (el('speed')) { const s = el('speed'); if (el('speedVal')) el('speedVal').innerText = s.value; s.oninput = (e) => { if (el('speedVal')) el('speedVal').innerText = parseFloat(e.target.value).toFixed(2); if (el('speedInput')) el('speedInput').value = parseFloat(e.target.value); }; }
+    if (el('speedInput')) el('speedInput').oninput = (e) => { const speed = Math.max(0.01, Math.min(10, parseFloat(e.target.value) || 0.05)); if (el('speed')) el('speed').value = speed; if (el('speedVal')) el('speedVal').innerText = speed.toFixed(2); };
     if (el('reset')) el('reset').onclick = () => this.resetScene();
     if (el('pause')) el('pause').onclick = (e) => { this.paused = !this.paused; e.target.innerText = this.paused ? 'Resume' : 'Pause'; };
     if (el('toggleAiming')) el('toggleAiming').onclick = (e) => { this.showAiming = !this.showAiming; e.target.innerText = this.showAiming ? 'Hide Aiming' : 'Show Aiming'; const aim = this.scene.getObjectByName('aimingLine'); if (aim) aim.visible = this.showAiming; };
-    if (el('fire')) el('fire').onclick = () => this.shootMeteor();
+  if (el('fire')) el('fire').onclick = () => this.shootMeteor();
+  // wire meteor size UI
+  const ms = el('meteorSize'); if(ms){ const mv = el('meteorSizeVal'); mv.innerText = ms.value; ms.oninput = (e)=>{ if(mv) mv.innerText = parseFloat(e.target.value).toFixed(1); }; }
     if (el('loadMore')) el('loadMore').onclick = () => this.fetchAsteroidList(true);
   const moreBtn = el('moreBigMeteors'); if(moreBtn) moreBtn.onclick = (e) => { this.moreBigMeteors = !this.moreBigMeteors; e.target.innerText = `More Big Meteors: ${this.moreBigMeteors? 'On' : 'Off'}`; };
   const spawnBig = el('spawnBigMeteor'); if(spawnBig) spawnBig.onclick = ()=>{ this.spawnRandomBigMeteor(); };
@@ -306,11 +353,6 @@ class App {
     if(optMoonCraters) optMoonCraters.onchange = (e)=>{ this.moonCraters = !!e.target.checked; if(this.moonCraters) this._ensureMoonCraters(); };
     if(optSizeRange) optSizeRange.oninput = (e)=>{ const v=parseFloat(e.target.value); const ms = document.getElementById('meteorSize'); if(ms) ms.value = v; };
 
-  // wire UI color pickers
-  const uiColor = document.getElementById('opt-ui-color'); const btnColor = document.getElementById('opt-button-color');
-  if(uiColor) uiColor.oninput = (e)=>{ const u = document.getElementById('ui'); if(u) u.style.background = e.target.value; };
-  if(btnColor) btnColor.oninput = (e)=>{ document.querySelectorAll('#ui button, #taskbar-buttons button, .titlebar .title-buttons button').forEach(b=>{ b.style.background = e.target.value; b.style.borderColor = e.target.value; }); };
-
     // keyboard control for meteor size (+/-)
     window.addEventListener('keydown', (ev)=>{
       try{
@@ -340,6 +382,9 @@ class App {
 
     // attempt to auto-load a local earth texture file if present (project root: earth_texture.jpg)
     try { this.tryLoadLocalEarthTexture(); } catch(e){ /* ignore */ }
+    
+    // Initialize map
+    this.initMap();
   }
 
   spawnRandomBigMeteor(){
@@ -605,14 +650,513 @@ class App {
     }
   }
 
-  onKeyDown(event) { if(event.code === 'Space') this.shootMeteor(); }
+  onKeyDown(event) { 
+    if(event.code === 'Space') {
+      // Check if a NASA meteor is selected, otherwise fire basic meteor
+      const select = document.getElementById('asteroidSelect');
+      if (select && select.value) {
+        this.fireSelectedAsteroid();
+      } else {
+        this.shootMeteor();
+      }
+    } else if(event.code === 'KeyR') {
+      // R key to reset scene
+      this.resetScene();
+    } else if(event.code === 'KeyP') {
+      // P key to pause/resume
+      this.paused = !this.paused;
+      const pauseBtn = document.getElementById('pause');
+      if (pauseBtn) pauseBtn.innerText = this.paused ? 'Resume' : 'Pause';
+    } else if(event.code === 'KeyE') {
+      // E key to focus on Earth
+      this.focusOnEarth();
+    } else if(event.code === 'KeyM') {
+      // M key to focus on Moon
+      this.focusOnMoon();
+    } else if(event.code === 'KeyT') {
+      // T key to focus on last meteor
+      this.focusOnLastMeteor();
+    } else if(event.code === 'KeyF') {
+      // F key for free camera
+      this.setFreeCamera();
+    } else if(event.code === 'KeyG') {
+      // G key to toggle gravity fields
+      this.showGravityViz = !this.showGravityViz;
+      const gravityBtn = document.getElementById('toggleGravityViz');
+      if (gravityBtn) gravityBtn.innerText = this.showGravityViz ? 'Hide Gravity Fields' : 'Show Gravity Fields';
+      this.toggleGravityVisualizers();
+    }
+  }
+
+  // Camera focus functions
+  focusOnEarth() {
+    this.cameraFocus = 'earth';
+    this.focusedMeteor = null;
+    const earthPos = new THREE.Vector3(0, 0, 0);
+    const cameraPos = new THREE.Vector3(0, 0, this.earthRadius * 3);
+    this.frameCameraTo(earthPos, cameraPos, 1500);
+  }
+
+  focusOnMoon() {
+    this.cameraFocus = 'moon';
+    this.focusedMeteor = null;
+    const moon = this.scene.getObjectByName('moon');
+    if (moon) {
+      const moonPos = moon.position.clone();
+      const cameraPos = moonPos.clone().add(new THREE.Vector3(0, 0, this.moonRadius * 5));
+      this.frameCameraTo(moonPos, cameraPos, 1500);
+    }
+  }
+
+  focusOnLastMeteor() {
+    if (this.meteors.length > 0) {
+      this.cameraFocus = 'meteor';
+      this.focusedMeteor = this.meteors[this.meteors.length - 1];
+      const meteorPos = this.focusedMeteor.mesh.position.clone();
+      
+      // Convert meteor size to scene units for proper camera distance
+      const meteorSizeScene = this.focusedMeteor.size / this.SCENE_SCALE;
+      const cameraDistance = Math.max(meteorSizeScene * 20, this.earthRadius * 0.5); // At least half Earth radius
+      const cameraPos = meteorPos.clone().add(new THREE.Vector3(0, 0, cameraDistance));
+      
+      this.frameCameraTo(meteorPos, cameraPos, 1500);
+    }
+  }
+
+  setFreeCamera() {
+    this.cameraFocus = 'free';
+    this.focusedMeteor = null;
+  }
+
+
+  // Update camera focus
+  updateCameraFocus() {
+    if (this.cameraFocus === 'free') return; // Don't update camera in free mode
+    
+    if (this.cameraFocus === 'earth') {
+      const earthPos = new THREE.Vector3(0, 0, 0);
+      const cameraPos = new THREE.Vector3(0, 0, this.earthRadius * 3);
+      this.camera.position.lerp(cameraPos, 0.05);
+      this.controls.target.lerp(earthPos, 0.05);
+    } else if (this.cameraFocus === 'moon') {
+      const moon = this.scene.getObjectByName('moon');
+      if (moon) {
+        const moonPos = moon.position.clone();
+        const cameraPos = moonPos.clone().add(new THREE.Vector3(0, 0, this.moonRadius * 5));
+        this.camera.position.lerp(cameraPos, 0.05);
+        this.controls.target.lerp(moonPos, 0.05);
+      }
+    } else if (this.cameraFocus === 'meteor' && this.focusedMeteor && this.focusedMeteor.active) {
+      const meteorPos = this.focusedMeteor.mesh.position.clone();
+      
+      // Convert meteor size to scene units for proper camera distance
+      const meteorSizeScene = this.focusedMeteor.size / this.SCENE_SCALE;
+      const cameraDistance = Math.max(meteorSizeScene * 20, this.earthRadius * 0.5);
+      
+      // Calculate camera position relative to meteor, maintaining current offset
+      const currentOffset = this.camera.position.clone().sub(meteorPos);
+      const targetOffset = currentOffset.normalize().multiplyScalar(cameraDistance);
+      const cameraPos = meteorPos.clone().add(targetOffset);
+      
+      this.camera.position.lerp(cameraPos, 0.05);
+      this.controls.target.lerp(meteorPos, 0.05);
+    } else if (this.cameraFocus === 'meteor' && (!this.focusedMeteor || !this.focusedMeteor.active)) {
+      // If focused meteor is no longer active, switch to free camera
+      this.setFreeCamera();
+    }
+  }
+
+  // Update moon orbital position
+  updateMoon() {
+    const moon = this.scene.getObjectByName('moon');
+    if (!moon) return;
+    
+    // Update orbital angle
+    this.moonAngle += this.moonOrbitalSpeed * this.simSpeed * 0.02;
+    if (this.moonAngle > Math.PI * 2) this.moonAngle -= Math.PI * 2;
+    
+    // Calculate new position
+    const x = Math.cos(this.moonAngle) * this.moonDistance;
+    const z = Math.sin(this.moonAngle) * this.moonDistance;
+    moon.position.set(x, 0, z);
+    
+    // Update moon label position
+    const moonLabel = this.labels.find(l => l.element.innerText.includes('Moon'));
+    if (moonLabel) {
+      moonLabel.position.set(x + this.moonRadius + 0.2, 0, z);
+    }
+  }
+
+
+  // Calculate gravitational force from moon
+  calculateMoonGravity(meteor) {
+    const moon = this.scene.getObjectByName('moon');
+    if (!moon) return new THREE.Vector3();
+    
+    const meteorPos = meteor.mesh.position.clone().multiplyScalar(this.SCENE_SCALE);
+    const moonPos = moon.position.clone().multiplyScalar(this.SCENE_SCALE);
+    const distance = meteorPos.distanceTo(moonPos);
+    
+    if (distance < 1) return new THREE.Vector3(); // Avoid division by zero
+    
+    const force = this.G * this.moonMass * meteor.mass / (distance * distance);
+    const direction = moonPos.sub(meteorPos).normalize();
+    
+    return direction.multiplyScalar(force);
+  }
+
+  // Calculate gravitational force from Earth
+  calculateEarthGravity(meteor) {
+    const earthPos = new THREE.Vector3(0, 0, 0);
+    const meteorPos = meteor.mesh.position.clone().multiplyScalar(this.SCENE_SCALE);
+    const distance = meteorPos.length();
+    
+    if (distance < 1) return new THREE.Vector3(); // Avoid division by zero
+    
+    const force = this.G * this.earthMass * meteor.mass / (distance * distance);
+    const direction = earthPos.sub(meteorPos).normalize();
+    
+    return direction.multiplyScalar(force);
+  }
+
+  // Calculate meteor gravity force on another meteor
+  calculateMeteorGravity(meteor, otherMeteor) {
+    if (meteor === otherMeteor) return new THREE.Vector3(0, 0, 0);
+    
+    const meteorPos = meteor.mesh.position.clone().multiplyScalar(this.SCENE_SCALE);
+    const otherPos = otherMeteor.mesh.position.clone().multiplyScalar(this.SCENE_SCALE);
+    const toOther = otherPos.sub(meteorPos);
+    const distance = toOther.length();
+    
+    if (distance < 0.1) return new THREE.Vector3(0, 0, 0); // Avoid division by zero
+    
+    const forceMagnitude = this.G * otherMeteor.mass * meteor.mass / (distance * distance);
+    return toOther.normalize().multiplyScalar(forceMagnitude);
+  }
+
+  // Calculate atmospheric density at given altitude
+  getAtmosphericDensity(altitude) {
+    // Simplified atmospheric model - density decreases exponentially with altitude
+    const scaleHeight = 8400; // meters
+    return this.atmosphereDensity * Math.exp(-altitude / scaleHeight);
+  }
+
+  // Calculate drag force on meteor
+  calculateDragForce(meteor) {
+    const altitude = meteor.mesh.position.length() * this.SCENE_SCALE - this.earthRadiusMeters;
+    if (altitude < 0) return new THREE.Vector3(); // Below surface
+    
+    const density = this.getAtmosphericDensity(altitude);
+    const speed = meteor.physVelocity ? meteor.physVelocity.length() : meteor.velocity.length() * this.SCENE_SCALE;
+    
+    if (speed < 1) return new THREE.Vector3(); // No drag for very slow objects
+    
+    const area = meteor.area || Math.PI * Math.pow(meteor.size / 2, 2);
+    const dragForce = 0.5 * density * speed * speed * this.dragCoefficient * area;
+    
+    // Drag force opposes velocity direction
+    const velocity = meteor.physVelocity ? meteor.physVelocity.clone() : meteor.velocity.clone().multiplyScalar(this.SCENE_SCALE);
+    const dragDirection = velocity.normalize().multiplyScalar(-1);
+    
+    return dragDirection.multiplyScalar(dragForce);
+  }
+
+  // Check if meteor should burn up
+  shouldBurnUp(meteor) {
+    const altitude = meteor.mesh.position.length() * this.SCENE_SCALE - this.earthRadiusMeters;
+    if (altitude > this.atmosphereHeight) return false;
+    
+    const speed = meteor.physVelocity ? meteor.physVelocity.length() : meteor.velocity.length() * this.SCENE_SCALE;
+    return speed > this.burnSpeedThreshold;
+  }
+
+  // Create burning effect for meteor
+  createBurnEffect(meteor) {
+    const burnGeo = new THREE.SphereGeometry(meteor.size * 2, 8, 8);
+    const burnMat = new THREE.MeshBasicMaterial({ 
+      color: 0xff4400, 
+      transparent: true, 
+      opacity: 0.8,
+      blending: THREE.AdditiveBlending
+    });
+    const burnEffect = new THREE.Mesh(burnGeo, burnMat);
+    burnEffect.position.copy(meteor.mesh.position);
+    this.scene.add(burnEffect);
+    
+    // Add to impact effects for cleanup
+    this.impactEffects.push({ 
+      mesh: burnEffect, 
+      type: 'burn',
+      lifetime: 0.5 // seconds
+    });
+  }
+
+  // Create gravity field visualizer
+  createGravityVisualizer(object, mass, color = 0x00ff00) {
+    if (!object || !object.position) return null;
+    
+    const radius = Math.sqrt(mass / this.earthMass) * this.earthRadius * 2; // Scale based on mass
+    const geo = new THREE.SphereGeometry(radius, 16, 16);
+    const mat = new THREE.MeshBasicMaterial({ 
+      color: color, 
+      transparent: true, 
+      opacity: 0.2,
+      wireframe: true,
+      side: THREE.DoubleSide
+    });
+    const viz = new THREE.Mesh(geo, mat);
+    viz.position.copy(object.position);
+    viz.name = `gravityViz_${object.name || 'unknown'}`;
+    this.scene.add(viz);
+    this.gravityVisualizers.push({ mesh: viz, target: object });
+    return viz;
+  }
+
+  // Update gravity visualizers
+  updateGravityVisualizers() {
+    this.gravityVisualizers.forEach(viz => {
+      if (viz.target && viz.target.position) {
+        viz.mesh.position.copy(viz.target.position);
+      }
+    });
+  }
+
+  // Create simple explosion effect
+  createExplosion(position, energy) {
+    if (!this.enableExplosions) return;
+    
+    // Add to impact map
+    this.addImpactToMap(position, energy);
+    
+    // Log explosion data
+    const kilotons = energy / 4.184e12;
+    console.log(`Impact: ${kilotons.toFixed(2)} kt`);
+  }
+
+
+
+  // Update explosion effects
+  updateExplosionEffects() {
+    // Iterate backwards to safely remove items
+    for (let i = this.explosionEffects.length - 1; i >= 0; i--) {
+      const effect = this.explosionEffects[i];
+      effect.lifetime -= 0.02 * this.simSpeed;
+      
+      // Update particles
+      if (effect.group && effect.group.children) {
+        effect.group.children.forEach(particle => {
+          if (particle.userData) {
+            particle.position.add(particle.userData.velocity.clone().multiplyScalar(0.02 * this.simSpeed));
+            particle.userData.lifetime -= 0.02 * this.simSpeed;
+            particle.material.opacity = particle.userData.lifetime / particle.userData.maxLifetime;
+          }
+        });
+      }
+      
+      // Remove if expired
+      if (effect.lifetime <= 0) {
+        if (effect.group) {
+          this.scene.remove(effect.group);
+        }
+        this.explosionEffects.splice(i, 1);
+      }
+    }
+  }
+
+  // Toggle gravity visualizers
+  toggleGravityVisualizers() {
+    if (this.showGravityViz) {
+      // Create gravity visualizers for Earth and Moon
+      const earth = this.scene.children.find(c => c.geometry && c.geometry.type === 'SphereGeometry' && c.name !== 'moon');
+      if (earth) {
+        earth.name = 'earth';
+        this.createGravityVisualizer(earth, this.earthMass, 0x00ff00);
+      }
+      
+      const moon = this.scene.getObjectByName('moon');
+      if (moon) {
+        this.createGravityVisualizer(moon, this.moonMass, 0x0088ff);
+      }
+      
+      // Add gravity visualizers for all meteors
+      this.meteors.forEach(meteor => {
+        if (meteor.active) {
+          this.createGravityVisualizer(meteor.mesh, meteor.mass, 0xff8800);
+        }
+      });
+    } else {
+      // Remove all gravity visualizers
+      this.gravityVisualizers.forEach(viz => {
+        this.scene.remove(viz.mesh);
+      });
+      this.gravityVisualizers = [];
+    }
+  }
+
+  // Fire selected NASA asteroid from camera position
+  async fireSelectedAsteroid() {
+    if (!this.cursor || !this.cursor.position) {
+      console.warn('Cursor not initialized, cannot fire asteroid');
+      return;
+    }
+    
+    const select = document.getElementById('asteroidSelect');
+    if (!select || !select.value) return;
+    
+    const details = await this.fetchAsteroidDetails(select.value) || (this.asteroidList || []).find(a => a.id === select.value);
+    if (!details) return;
+    
+    // Calculate mid-size from min and max diameter
+    const minSize = details.estimated_diameter.meters.estimated_diameter_min;
+    const maxSize = details.estimated_diameter.meters.estimated_diameter_max;
+    const midSize = (minSize + maxSize) / 2;
+    
+    // Calculate realistic mass and properties
+    const density = 3000; // kg/m³ - typical asteroid density
+    const volume = (4/3) * Math.PI * Math.pow(midSize/2, 3);
+    const mass = density * volume;
+    const area = Math.PI * Math.pow(midSize/2, 2);
+    
+    // Create meteor mesh
+    const meteorGeo = new THREE.SphereGeometry(1, 16, 16);
+    const meteorMat = new THREE.MeshStandardMaterial({ 
+      color: 0xaaaaaa, 
+      metalness: 0.1, 
+      roughness: 0.6 
+    });
+    const meteor = new THREE.Mesh(meteorGeo, meteorMat);
+    
+    // Position meteor at camera position
+    meteor.position.copy(this.camera.position);
+    
+    // Scale meteor to actual size - fix scaling to match Earth size
+    const radiusMeters = midSize / 2; // radius in meters
+    const radiusScene = radiusMeters / this.SCENE_SCALE; // convert to scene units
+    meteor.scale.setScalar(Math.max(radiusScene, 1e-6));
+    
+    
+    this.scene.add(meteor);
+    const label = this.createLabel(`${details.name} (${midSize.toFixed(0)} m)`, meteor.position);
+    
+    // Calculate direction from camera to cursor
+    const dir = new THREE.Vector3().subVectors(this.cursor.position, this.camera.position).normalize();
+    
+    // Use the meteor speed from UI
+    const speedEl = document.getElementById('speed');
+    const speed = speedEl ? parseFloat(speedEl.value) : 0.05;
+    
+    // Convert velocity to scene units and create physics velocity
+    const sceneVelocity = dir.multiplyScalar(speed);
+    const physVelocity = dir.clone().multiplyScalar(speed * this.SCENE_SCALE);
+    
+    // Add meteor with all properties
+    const asteroidData = { 
+      mesh: meteor, 
+      velocity: sceneVelocity, 
+      physVelocity: physVelocity, 
+      active: true, 
+      mass, 
+      area, 
+      size: midSize,
+      burning: false,
+      burnIntensity: 0,
+      label,
+      asteroidData: details, // Store original asteroid data
+      entrySpeed: speed * this.SCENE_SCALE, // m/s
+      energy: 0.5 * mass * Math.pow(speed * this.SCENE_SCALE, 2)
+    };
+    
+    this.meteors.push(asteroidData);
+    this.lastMeteorData = asteroidData;
+    this.updateMeteorStats();
+    
+    // Create trajectory line
+    this.createTrajectoryLine(asteroidData);
+  }
+
+  // Create trajectory line for meteor
+  createTrajectoryLine(meteor) {
+    const points = this.calculateTrajectory(meteor);
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    const material = new THREE.LineBasicMaterial({ 
+      color: 0x00ff00, 
+      transparent: true, 
+      opacity: 0.7,
+      linewidth: 2
+    });
+    const line = new THREE.Line(geometry, material);
+    line.name = `trajectory_${meteor.mesh.id}`;
+    this.scene.add(line);
+    this.trajectoryLines.push({ line, meteor });
+  }
+
+  // Calculate trajectory points for meteor
+  calculateTrajectory(meteor) {
+    const points = [];
+    const startPos = meteor.mesh.position.clone();
+    const velocity = meteor.velocity.clone();
+    const steps = 500; // Increased steps for longer trajectory
+    const dt = 0.1;
+    
+    let pos = startPos.clone();
+    let vel = velocity.clone();
+    
+    for (let i = 0; i < steps; i++) {
+      points.push(pos.clone());
+      
+      // Simple physics simulation for trajectory
+      const r = pos.length();
+      if (r < this.earthRadius + 0.2) break; // Stop if hitting Earth
+      
+      // Apply gravity
+      const gravityAccel = pos.clone().normalize().multiplyScalar(-this.gravityStrength / (r * r));
+      vel.add(gravityAccel.multiplyScalar(dt));
+      pos.add(vel.clone().multiplyScalar(dt));
+      
+      // Continue trajectory indefinitely (no distance limit)
+    }
+    
+    return points;
+  }
+
+  // Update trajectory lines
+  updateTrajectoryLines() {
+    // Iterate backwards to safely remove items
+    for (let i = this.trajectoryLines.length - 1; i >= 0; i--) {
+      const traj = this.trajectoryLines[i];
+      if (!traj.meteor.active) {
+        // Remove trajectory when meteor is destroyed
+        this.scene.remove(traj.line);
+        this.trajectoryLines.splice(i, 1);
+        continue;
+      }
+      
+      // Update trajectory points
+      const points = this.calculateTrajectory(traj.meteor);
+      traj.line.geometry.setFromPoints(points);
+    }
+  }
 
   shootMeteor() {
+    if (!this.cursor || !this.cursor.position) {
+      console.warn('Cursor not initialized, cannot shoot meteor');
+      return;
+    }
+    
     const speedEl = document.getElementById('speed');
     const speed = speedEl ? parseFloat(speedEl.value) : 0.05;
     const sizeEl = document.getElementById('meteorSize');
-    let size = sizeEl ? parseFloat(sizeEl.value) : 0.5;
-    if(this.moreBigMeteors){ size = 3 + Math.random() * 37; }
+    const size = sizeEl ? parseFloat(sizeEl.value) : 0.5;
+  // create a textured, irregular 3D meteor mesh sized according to `size` (meters)
+  const meteor = this.createMeteorMesh(size);
+  meteor.position.copy(this.camera.position);
+    const dir = new THREE.Vector3().subVectors(this.cursor.position, this.camera.position).normalize();
+    // If we have a predicted impact marker, aim directly at that point so meteors go toward the globe
+    if(this.predictedImpactMarker && this.predictedImpactMarker.visible){
+      dir.copy(this.predictedImpactMarker.position).sub(meteor.position).normalize();
+    }
+    const density = 3000;
+    const size = 10000; // 10,000 meters diameter (10km)
     const meteorGeo = new THREE.SphereGeometry(1, 16, 16);
   const meteorMat = new THREE.MeshStandardMaterial({ color:0x888888, metalness:0.2, roughness:0.5 });
   if(meteorTexture){ meteorMat.map = meteorTexture; meteorMat.needsUpdate = true; }
@@ -632,7 +1176,7 @@ class App {
       const trailGeo = new THREE.BufferGeometry();
       trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
       trailGeo.setDrawRange(0, 0);
-  const trailMat = new THREE.LineBasicMaterial({ color: this.trailsEnabled?0xff6600:0xffdd88, transparent: true, opacity: 0.95 });
+      const trailMat = new THREE.LineBasicMaterial({ color: 0xffdd88, transparent: true, opacity: 0.9 });
       const trailLine = new THREE.Line(trailGeo, trailMat);
       trailLine.frustumCulled = false;
       this.scene.add(trailLine);
@@ -641,11 +1185,423 @@ class App {
     const physVelocity = dir.clone().multiplyScalar(speed * this.SCENE_SCALE);
     // Convert meters -> scene units. Geometry radius is 1 (1 meter), so to represent
     // a meteor with diameter `size` (meters) we scale by radius = size/2 in meters.
-  const meterToScene = 1 / this.SCENE_SCALE;
-  const radiusScene = (size / 2) * meterToScene;
-  const visScale = Math.max(radiusScene * this.meteorVisualScale, 1e-6); // avoid zero scale but make visible
-  meteor.scale.setScalar(visScale);
-    this.meteors.push({ mesh:meteor, velocity:dir.multiplyScalar(speed), physVelocity, active:true, label, mass, area, size, trail: trailObj });
+    const meterToScene = 1 / this.SCENE_SCALE;
+    const radiusScene = (size / 2) * meterToScene;
+  // scale is handled inside createMeteorMesh; ensure minimal visibility if necessary
+    // Give meteors a TTL and make their scene velocity slightly slower so they don't fly into space
+    const sceneVelocity = dir.clone().multiplyScalar(speed * 0.6);
+    meteor.material.transparent = true; meteor.material.opacity = 1.0;
+    // give a small random angular velocity so meteors tumble in flight
+    const angVel = new THREE.Vector3((Math.random()-0.5)*2, (Math.random()-0.5)*2, (Math.random()-0.5)*2).multiplyScalar(0.6);
+    this.meteors.push({ mesh:meteor, velocity:sceneVelocity, physVelocity, active:true, label, mass, area, size, ttl: 800, fading:false, angularVelocity: angVel });
+  }
+
+  // Create a textured meteor mesh as a smooth sphere and apply meteor_texture.jpg as its material map.
+  // sizeMeters is diameter in meters.
+  createMeteorMesh(sizeMeters){
+  // smooth sphere geometry for a ball-like meteor (increased resolution for crisper craters)
+  const widthSeg = 96; // was 48
+  const heightSeg = 64; // was 32
+  const geom = new THREE.SphereGeometry(1, widthSeg, heightSeg);
+
+    // create a PBR-friendly material; we'll set the map when the texture loads
+    const mat = new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.9, metalness:0.02, transparent:true });
+    const mesh = new THREE.Mesh(geom, mat);
+
+    // try to load an external meteor texture image located at project root
+    const loader = new THREE.TextureLoader();
+    loader.load('meteor_texture.jpg', (tex)=>{
+      try{
+        const img = tex.image;
+        // helper to apply crater-like inward domes by sampling the image at each vertex UV
+        // and bake a normal map from the processed brightness map for better lighting
+        const applyCratersFromImage = (image)=>{
+          try{
+            const w = image.width, h = image.height;
+            const cvs = document.createElement('canvas'); cvs.width = w; cvs.height = h;
+            const ctx = cvs.getContext('2d');
+            ctx.drawImage(image, 0, 0, w, h);
+            // lightly darken for visual consistency
+            ctx.fillStyle = 'rgba(0,0,0,0.06)'; ctx.fillRect(0,0,w,h);
+            const srcImg = ctx.getImageData(0,0,w,h);
+
+            // crater sculpting parameters (unit-sphere space)
+            // user requested deeper craters here
+            const maxDepth = 0.09; // increased depth for more pronounced, but still controlled, inward domes
+            const thresholdLow = 0.20; // darkness threshold where crater starts
+            const thresholdHigh = 0.75; // darkness where crater is strongest
+            const blurRadiusPx = Math.max(2, Math.floor(Math.min(w,h) * 0.02)); // slightly larger blur for smoother domes
+
+            const posAttr = geom.attributes.position;
+            const uvAttr = geom.attributes.uv;
+            if(!uvAttr) return null;
+
+            // smoothstep helper
+            const smoothstep = (edge0, edge1, x) => {
+              const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+              return t * t * (3 - 2 * t);
+            };
+
+            // build a blurred height map (brightness -> height) using a box blur; height = darkness
+            const height = new Float32Array(w*h);
+            const r = blurRadiusPx;
+            for(let py=0; py<h; py++){
+              for(let px=0; px<w; px++){
+                let sum = 0, count = 0;
+                for(let oy=-r; oy<=r; oy++){
+                  const sy = Math.min(h-1, Math.max(0, py + oy));
+                  for(let ox=-r; ox<=r; ox++){
+                    const sx = Math.min(w-1, Math.max(0, px + ox));
+                    const idx = (sy * w + sx) * 4;
+                    const rr = srcImg.data[idx], gg = srcImg.data[idx+1], bb = srcImg.data[idx+2];
+                    sum += (rr + gg + bb) / 3;
+                    count++;
+                  }
+                }
+                const avg = (sum / count) / 255.0;
+                height[py*w + px] = 1.0 - avg; // darkness as height (0..1)
+              }
+            }
+
+            // use the height map to displace vertices inward by a smooth dome amount
+            for(let i=0;i<posAttr.count;i++){
+              const u = uvAttr.getX(i);
+              const v = uvAttr.getY(i);
+              // nearest pixel sample from blurred height
+              const cx = Math.floor(u * (w - 1));
+              const cy = Math.floor((1 - v) * (h - 1));
+              const hval = height[cy * w + cx] || 0;
+              // crater strength derived from height with smoothstep thresholding
+              const craterStrength = smoothstep(thresholdLow, thresholdHigh, hval);
+              if(craterStrength <= 0) continue;
+
+              // get current vertex and normal (on unit sphere approximation)
+              const x = posAttr.getX(i), y = posAttr.getY(i), z = posAttr.getZ(i);
+              const norm = new THREE.Vector3(x, y, z).normalize();
+
+              // displace only inward (toward center) scaled by craterStrength
+              const disp = craterStrength * maxDepth;
+              const newPos = norm.clone().multiplyScalar(1 - disp);
+              posAttr.setXYZ(i, newPos.x, newPos.y, newPos.z);
+            }
+
+            posAttr.needsUpdate = true;
+            geom.computeVertexNormals();
+
+            // produce final canvas texture (we reuse the canvas we drew into earlier)
+            const finalTex = new THREE.CanvasTexture(cvs);
+            finalTex.encoding = THREE.sRGBEncoding;
+            finalTex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+            finalTex.wrapS = finalTex.wrapT = THREE.RepeatWrapping;
+            finalTex.repeat.set(1,1);
+
+            // Bake a normal map from the blurred height map for improved lighting (linear encoding)
+            try{
+              const nCvs = document.createElement('canvas'); nCvs.width = w; nCvs.height = h;
+              const nCtx = nCvs.getContext('2d');
+              const nImg = nCtx.createImageData(w,h);
+              // strength factor controls how pronounced the normals appear
+              const strength = Math.max(0.8, maxDepth * 24.0);
+              for(let py=0; py<h; py++){
+                for(let px=0; px<w; px++){
+                  const idx = py*w + px;
+                  const hl = height[py*w + Math.max(0, px-1)];
+                  const hr = height[py*w + Math.min(w-1, px+1)];
+                  const hu = height[Math.max(0, py-1)*w + px];
+                  const hd = height[Math.min(h-1, py+1)*w + px];
+                  const dx = (hr - hl) * strength;
+                  const dy = (hd - hu) * strength;
+                  // normal in tangent-space
+                  let nx = -dx, ny = -dy, nz = 1.0;
+                  const len = Math.sqrt(nx*nx + ny*ny + nz*nz) || 1.0;
+                  nx /= len; ny /= len; nz /= len;
+                  // encode to RGB [0..255]
+                  const off = idx * 4;
+                  nImg.data[off]   = Math.floor((nx * 0.5 + 0.5) * 255);
+                  nImg.data[off+1] = Math.floor((ny * 0.5 + 0.5) * 255);
+                  nImg.data[off+2] = Math.floor((nz * 0.5 + 0.5) * 255);
+                  nImg.data[off+3] = 255;
+                }
+              }
+              nCtx.putImageData(nImg, 0, 0);
+              const normalTex = new THREE.CanvasTexture(nCvs);
+              normalTex.encoding = THREE.LinearEncoding;
+              normalTex.wrapS = normalTex.wrapT = THREE.RepeatWrapping;
+              normalTex.needsUpdate = true;
+              // assign both albedo and normal map to material
+              mat.normalMap = normalTex;
+              // user requested less aggressive normal strength
+              mat.normalScale = new THREE.Vector2(0.25, 0.25);
+            }catch(err){ console.warn('normal map bake failed', err); }
+
+            return finalTex;
+          }catch(err){ console.warn('applyCratersFromImage failed', err); return null; }
+        };
+
+        if(img && img.width && img.height){
+          // create a darker, crater-sculpted texture and assign it
+          const craterTex = applyCratersFromImage(img);
+          if(craterTex){ mat.map = craterTex; }
+          else { tex.encoding = THREE.sRGBEncoding; tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy(); tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(1,1); mat.map = tex; }
+        } else {
+          tex.encoding = THREE.sRGBEncoding; tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy(); tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(1,1); mat.map = tex;
+        }
+        mat.needsUpdate = true;
+      }catch(e){
+        console.warn('meteor texture assignment failed', e);
+      }
+    }, undefined, ()=>{
+      // fallback to procedural texture if load fails
+      const ctex = this.createProceduralMeteorTexture();
+      mat.map = ctex; mat.needsUpdate = true;
+    });
+
+  // Map meteor diameter (meters) to a visual radius using a wide dynamic-range mapping
+  // Endpoints: 0.1 m -> Andorra (very small), 25 m -> Montenegro (medium), 50 m -> Slovenia (large)
+  const MIN_MET = 0.1, MAX_MET = 50.0;
+  // Representative country areas (km^2) for visual anchors
+  const AREA_ANDORRA = 468;    // Andorra ~468 km^2 (tiny)
+  const AREA_MONTENEGRO = 13812; // Montenegro ~13.8k km^2 (medium)
+  const AREA_SLOVENIA = 20273; // Slovenia ~20.3k km^2 (large)
+  const radiusAndorra = Math.sqrt(AREA_ANDORRA / Math.PI) / 1000.0;
+  const radiusMontenegro = Math.sqrt(AREA_MONTENEGRO / Math.PI) / 1000.0;
+  const radiusSlovenia = Math.sqrt(AREA_SLOVENIA / Math.PI) / 1000.0;
+  // normalize input size (0..1)
+  const tRaw = (sizeMeters - MIN_MET) / (MAX_MET - MIN_MET);
+  const t = Math.max(0, Math.min(1, tRaw));
+  // bias growth so mid values map near Montenegro and larger values approach Slovenia
+  const gamma = 1.6;
+  const tAdj = Math.pow(t, gamma);
+  // interpolate between Andorra and Slovenia (Montenegro sits mid-range)
+  const visualRadiusBase = radiusAndorra + (radiusSlovenia - radiusAndorra) * tAdj;
+  // optional visual amplifier, smaller now that endpoints are closer
+  const VISUAL_AMPLIFIER = 1.2;
+  const visualRadius = visualRadiusBase * VISUAL_AMPLIFIER;
+  // clamp and set meteor scale (scene units)
+  mesh.scale.setScalar(Math.max(visualRadius, 0.005));
+
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    return mesh;
+  }
+
+  // Generate a simple procedural meteor texture as a CanvasTexture fallback
+  createProceduralMeteorTexture(){
+    const size = 512;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    // base color
+    ctx.fillStyle = '#9a8f85'; ctx.fillRect(0,0,size,size);
+    // noisy overlay
+    const image = ctx.getImageData(0,0,size,size);
+    for(let y=0;y<size;y++){
+      for(let x=0;x<size;x++){
+        const i = (y*size + x) * 4;
+        const n = Math.floor(40 * Math.random()) - 20;
+        image.data[i] = Math.max(0, Math.min(255, image.data[i] + n));
+        image.data[i+1] = Math.max(0, Math.min(255, image.data[i+1] + n));
+        image.data[i+2] = Math.max(0, Math.min(255, image.data[i+2] + n));
+        image.data[i+3] = 255;
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+    // draw some darker circular 'craters'
+    for(let i=0;i<120;i++){
+      const rx = Math.random()*size, ry = Math.random()*size, r = (2 + Math.random()*18);
+      const grad = ctx.createRadialGradient(rx, ry, 0, rx, ry, r);
+      const alpha = 0.15 + Math.random()*0.45;
+      grad.addColorStop(0, `rgba(30,20,10,${alpha})`);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(rx, ry, r, 0, Math.PI*2); ctx.fill();
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.encoding = THREE.sRGBEncoding;
+    tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+    
+    // Fix scaling: size is diameter in meters, convert to scene units
+    const radiusMeters = size / 2; // radius in meters
+    const radiusScene = radiusMeters / this.SCENE_SCALE; // convert to scene units
+    const visScale = Math.max(radiusScene, 1e-6); // avoid zero scale
+    meteor.scale.setScalar(visScale);
+    
+    
+    const meteorData = { 
+      mesh: meteor, 
+      velocity: dir.multiplyScalar(speed), 
+      physVelocity, 
+      active: true, 
+      label, 
+      mass, 
+      area, 
+      size,
+      burning: false,
+      burnIntensity: 0,
+      entrySpeed: speed * this.SCENE_SCALE,
+      energy: 0.5 * mass * Math.pow(speed * this.SCENE_SCALE, 2)
+    };
+    
+    this.meteors.push(meteorData);
+    this.lastMeteorData = meteorData;
+    this.updateMeteorStats();
+    
+    // Create trajectory line
+    this.createTrajectoryLine(meteorData);
+  }
+
+  // Update meteor stats display
+  updateMeteorStats() {
+    if (!this.lastMeteorData) return;
+    
+    const speed = document.getElementById('lastSpeed');
+    const size = document.getElementById('lastSize');
+    const mass = document.getElementById('lastMass');
+    const energy = document.getElementById('lastEnergy');
+    const status = document.getElementById('lastStatus');
+    
+    if (speed) speed.innerText = this.lastMeteorData.entrySpeed.toFixed(1);
+    if (size) size.innerText = this.lastMeteorData.size.toFixed(2);
+    if (mass) mass.innerText = this.lastMeteorData.mass.toFixed(0);
+    if (energy) energy.innerText = this.lastMeteorData.energy.toExponential(2);
+    if (status) status.innerText = this.lastMeteorData.active ? 'Active' : 'Impacted';
+  }
+
+  // Initialize map
+  initMap() {
+    this.mapCanvas = document.getElementById('impactMap');
+    if (this.mapCanvas) {
+      this.mapCtx = this.mapCanvas.getContext('2d');
+      this.drawMap();
+    }
+  }
+
+  // Convert 3D position to latitude/longitude
+  positionToLatLon(position) {
+    const x = position.x;
+    const y = position.y;
+    const z = position.z;
+    
+    // Convert to spherical coordinates
+    const lat = Math.asin(y / Math.sqrt(x*x + y*y + z*z)) * 180 / Math.PI;
+    const lon = -Math.atan2(z, x) * 180 / Math.PI; // Reverse longitude for correct mapping
+    
+    return { lat: lat, lon: lon };
+  }
+
+  // Convert latitude/longitude to map coordinates
+  latLonToMapCoords(lat, lon, canvasWidth, canvasHeight) {
+    const x = (lon + 180) / 360 * canvasWidth;
+    const y = (90 - lat) / 180 * canvasHeight;
+    return { x: x, y: y };
+  }
+
+  // Draw the impact map
+  drawMap() {
+    if (!this.mapCtx) return;
+    
+    const canvas = this.mapCanvas;
+    const ctx = this.mapCtx;
+    
+    // Clear canvas
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw Earth outline
+    ctx.strokeStyle = '#444';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(canvas.width / 2, canvas.height / 2, Math.min(canvas.width, canvas.height) / 2 - 10, 0, 2 * Math.PI);
+    ctx.stroke();
+    
+    // Draw impact locations
+    this.impactLocations.forEach(impact => {
+      const coords = this.latLonToMapCoords(impact.lat, impact.lon, canvas.width, canvas.height);
+      
+      // Size based on energy (kilotons)
+      const size = Math.max(2, Math.min(20, Math.log10(impact.energy / 4.184e12 + 1) * 3));
+      
+      // Color based on energy
+      const intensity = Math.min(1, Math.log10(impact.energy / 4.184e12 + 1) / 3);
+      const red = Math.floor(255 * intensity);
+      const green = Math.floor(255 * (1 - intensity));
+      
+      ctx.fillStyle = `rgb(${red}, ${green}, 0)`;
+      ctx.beginPath();
+      ctx.arc(coords.x, coords.y, size, 0, 2 * Math.PI);
+      ctx.fill();
+      
+      // Draw ring for larger impacts
+      if (impact.energy / 4.184e12 > 1) {
+        ctx.strokeStyle = `rgb(${red}, ${green}, 0)`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(coords.x, coords.y, size * 2, 0, 2 * Math.PI);
+        ctx.stroke();
+      }
+    });
+  }
+
+  // Add impact to map
+  addImpactToMap(position, energy) {
+    const latLon = this.positionToLatLon(position);
+    this.impactLocations.push({
+      lat: latLon.lat,
+      lon: latLon.lon,
+      energy: energy,
+      time: Date.now()
+    });
+    
+    // Update map info
+    const latEl = document.getElementById('impactLat');
+    const lonEl = document.getElementById('impactLon');
+    const energyEl = document.getElementById('mapEnergy');
+    
+    if (latEl) latEl.textContent = latLon.lat.toFixed(2);
+    if (lonEl) lonEl.textContent = latLon.lon.toFixed(2);
+    if (energyEl) energyEl.textContent = (energy / 4.184e12).toFixed(2);
+    
+    this.drawMap();
+  }
+
+  // Update statistics UI
+  updateStatistics() {
+    // FPS calculation
+    this.frameCount++;
+    const now = Date.now();
+    if (now - this.lastFpsTime >= 1000) {
+      this.currentFps = Math.round((this.frameCount * 1000) / (now - this.lastFpsTime));
+      this.frameCount = 0;
+      this.lastFpsTime = now;
+    }
+    
+    // Object count
+    const objectCount = this.meteors.length + this.explosionEffects.length + this.impactEffects.length + this.trajectoryLines.length;
+    
+    // Memory usage (approximate)
+    const memoryUsage = Math.round((performance.memory ? performance.memory.usedJSHeapSize : 0) / 1024 / 1024);
+    
+    // Update UI elements
+    const fps = document.getElementById('fps');
+    const objCount = document.getElementById('objectCount');
+    const memUsage = document.getElementById('memoryUsage');
+    const gravityMode = document.getElementById('gravityMode');
+    const atmosphereMode = document.getElementById('atmosphereMode');
+    const moonGravityMode = document.getElementById('moonGravityMode');
+    const totalEnergy = document.getElementById('totalEnergy');
+    const largestImpact = document.getElementById('largestImpact');
+    const avgImpact = document.getElementById('avgImpact');
+    
+    if (fps) fps.textContent = this.currentFps;
+    if (objCount) objCount.textContent = objectCount;
+    if (memUsage) memUsage.textContent = memoryUsage;
+    if (gravityMode) gravityMode.textContent = this.realistic ? 'Realistic' : 'Simple';
+    if (atmosphereMode) atmosphereMode.textContent = this.showAtmosphere ? 'On' : 'Off';
+    if (moonGravityMode) moonGravityMode.textContent = this.showMoon ? 'On' : 'Off';
+    if (totalEnergy) totalEnergy.textContent = this.totalImpactEnergy.toExponential(2);
+    if (largestImpact) largestImpact.textContent = (this.largestImpactEnergy / 4.184e12).toFixed(2); // Convert to kilotons
+    if (avgImpact) avgImpact.textContent = this.impactCount > 0 ? (this.totalImpactEnergy / this.impactCount / 4.184e12).toFixed(2) : '0';
   }
 
   resetScene() {
@@ -662,22 +1618,74 @@ class App {
       }catch(_){}
     });
     this.impactEffects = [];
+    this.explosionEffects.forEach(e=>{ this.scene.remove(e.group); });
+    this.explosionEffects = [];
+    this.gravityVisualizers.forEach(v=>{ this.scene.remove(v.mesh); });
+    this.gravityVisualizers = [];
+    this.trajectoryLines.forEach(t=>{ this.scene.remove(t.line); });
+    this.trajectoryLines = [];
     this.impactCount = 0; const ic = document.getElementById('impactCount'); if(ic) ic.innerText = '0';
+    this.totalImpactEnergy = 0;
+    this.largestImpactEnergy = 0;
+    this.frameCount = 0;
+    this.lastFpsTime = Date.now();
+    this.currentFps = 60;
+    this.lastMeteorData = null;
+    this.updateMeteorStats();
   }
 
+  animate(time) {
+    // schedule next frame and compute dt
+    requestAnimationFrame(this.animate.bind(this));
+    const now = time || performance.now();
+    const dtMs = this._lastFrameTime ? (now - this._lastFrameTime) : 16;
+    const dt = (dtMs / 1000) * this.simSpeed; // seconds scaled by simSpeed
+    this._lastFrameTime = now;
   animate() {
     requestAnimationFrame(() => this.animate());
+    
+    // Skip updates if paused
+    if (this.paused) {
+      this.controls.update();
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+    
     // Pulse cursor
     const ringMesh = this.cursor && this.cursor.getObjectByName && this.cursor.getObjectByName('cursorRing');
     if(ringMesh){ const pulse = 1 + 0.1 * Math.sin(Date.now() * 0.005); this.cursor.scale.set(pulse,pulse,pulse); }
     // update aiming line
     const aimingLine = this.scene.getObjectByName && this.scene.getObjectByName('aimingLine');
     if(aimingLine){ const positions = aimingLine.geometry.attributes.position.array; positions[0]=this.camera.position.x; positions[1]=this.camera.position.y; positions[2]=this.camera.position.z; positions[3]=this.cursor.position.x; positions[4]=this.cursor.position.y; positions[5]=this.cursor.position.z; aimingLine.geometry.attributes.position.needsUpdate=true; }
-  // update counters
+    // update counters
     const mc = document.getElementById('meteorCount'); if(mc) mc.innerText = String(this.meteors.length);
+    
+    // update simulation time
+    const currentTime = Date.now();
+    const simTime = (currentTime - this.simulationStartTime) / 1000 * this.simSpeed;
+    const st = document.getElementById('simTime'); if(st) st.innerText = simTime.toFixed(1);
+    
+    // update statistics
+    this.updateStatistics();
+    
     // predicted impact
     this.updatePredictedImpact();
     const mouseCursor = this.scene.getObjectByName('mouseCursor'); if(mouseCursor){ mouseCursor.position.copy(this.cursor.position); }
+    
+    // update moon orbit
+    this.updateMoon();
+
+    // update camera focus
+    this.updateCameraFocus();
+
+    // update gravity visualizers
+    this.updateGravityVisualizers();
+
+    // update explosion effects
+    this.updateExplosionEffects();
+
+    // update trajectory lines
+    this.updateTrajectoryLines();
 
   // camera framing update (if active)
     if(this.cameraFrame && this.cameraFrame.active){
@@ -691,38 +1699,84 @@ class App {
       if(t >= 1) this.cameraFrame.active = false;
     }
 
-    // camera shake update: apply an additive offset to camera.position based on a simple damped noise
-    if(this.cameraShake && this.cameraShake.amplitude > 0.0001){
-      this.cameraShake.time += 0.016 * this.simSpeed;
-      const a = this.cameraShake.amplitude;
-      const f = this.cameraShake.frequency;
-      // simple pseudo-random shake using sines
-      const ox = (Math.sin(this.cameraShake.time * f * 1.3) + Math.sin(this.cameraShake.time * f * 0.7 * 1.1)) * 0.5 * a;
-      const oy = (Math.sin(this.cameraShake.time * f * 1.7) + Math.sin(this.cameraShake.time * f * 0.5 * 1.3)) * 0.5 * a;
-      const oz = (Math.sin(this.cameraShake.time * f * 1.1) + Math.sin(this.cameraShake.time * f * 0.9)) * 0.5 * a;
-      this.camera.position.add(new THREE.Vector3(ox, oy, oz));
-      // decay amplitude
-      this.cameraShake.amplitude *= Math.pow(this.cameraShake.decay, this.simSpeed);
-    }
-
-    // Meteors update (simple version: non-realistic faster path)
+    // Meteors update with atmosphere effects
     this.meteors.forEach(meteor=>{
       if(!meteor.active) return;
       const pos = meteor.mesh.position;
       const r = pos.length();
+      // apply angular velocity (tumble) if present
+      if(meteor.angularVelocity && meteor.mesh){
+        // convert angular velocity vector (radians/sec) into a small rotation quaternion
+        const av = meteor.angularVelocity.clone().multiplyScalar(dt);
+        const ax = av.length();
+        if(ax > 0){
+          const q = new THREE.Quaternion();
+          q.setFromAxisAngle(av.normalize(), ax);
+          meteor.mesh.quaternion.premultiply(q);
+          // slight damping so the tumble slows over time
+          meteor.angularVelocity.multiplyScalar(0.998);
+        }
+      }
+      const altitude = r * this.SCENE_SCALE - this.earthRadiusMeters;
+      
+      // Check if meteor should burn up in atmosphere
+      if(altitude < this.atmosphereHeight && this.shouldBurnUp(meteor)) {
+        if(!meteor.burning) {
+          meteor.burning = true;
+          this.createBurnEffect(meteor);
+        }
+        meteor.burnIntensity = Math.min(1, meteor.burnIntensity + 0.1 * this.simSpeed);
+        
+        // Gradually reduce meteor size due to burning
+        const burnScale = 1 - (meteor.burnIntensity * 0.3);
+        meteor.mesh.scale.setScalar(meteor.mesh.scale.x * burnScale);
+        
+        // Random chance of complete burn-up
+        if(Math.random() < meteor.burnIntensity * 0.1 * this.simSpeed) {
+          meteor.active = false;
+          this.scene.remove(meteor.mesh);
+          if(meteor.label && meteor.label.element && meteor.label.element.parentNode) {
+            meteor.label.element.parentNode.removeChild(meteor.label.element);
+          }
+          const li = this.labels.indexOf(meteor.label); 
+          if(li !== -1) this.labels.splice(li, 1);
+          return;
+        }
+      }
+      
       if(this.realistic){
-        // keep original complex integration: for brevity we fallback to simple motion here
         const posMeters = pos.clone().multiplyScalar(this.SCENE_SCALE);
         const vel = meteor.physVelocity.clone();
         const dt = 0.02 * this.simSpeed;
-        // semi-implicit Euler gravity approximation (faster)
+        
+        // Earth gravity force (Newton's law of universal gravitation)
         const rmag = posMeters.length();
-        const g = posMeters.clone().multiplyScalar(-this.G*this.earthMass/(rmag*rmag*rmag));
-        meteor.physVelocity.add(g.multiplyScalar(dt));
+        const earthGravityForce = posMeters.clone().multiplyScalar(-this.G*this.earthMass/(rmag*rmag*rmag));
+        
+        // Moon gravity force
+        const moonGravityForce = this.calculateMoonGravity(meteor);
+        
+        // Meteor-to-meteor gravity forces
+        let meteorGravityForce = new THREE.Vector3(0, 0, 0);
+        this.meteors.forEach(otherMeteor => {
+          if (otherMeteor !== meteor && otherMeteor.active) {
+            meteorGravityForce.add(this.calculateMeteorGravity(meteor, otherMeteor));
+          }
+        });
+        
+        // Atmospheric drag force
+        const dragForce = this.calculateDragForce(meteor);
+        
+        // Apply forces (F = ma, so a = F/m)
+        const totalForce = earthGravityForce.add(moonGravityForce).add(meteorGravityForce).add(dragForce);
+        const acceleration = totalForce.divideScalar(meteor.mass);
+        
+        meteor.physVelocity.add(acceleration.multiplyScalar(dt));
         posMeters.add(meteor.physVelocity.clone().multiplyScalar(dt));
         meteor.mesh.position.copy(posMeters.multiplyScalar(1/this.SCENE_SCALE));
         if(meteor.label) meteor.label.position.copy(meteor.mesh.position);
       } else {
+        // Enhanced simple mode physics with proper gravity
         const gravityAccel = pos.clone().normalize().multiplyScalar(-this.gravityStrength/(r*r));
         meteor.velocity.add(gravityAccel.multiplyScalar(this.simSpeed));
         pos.add(meteor.velocity.clone().multiplyScalar(this.simSpeed));
@@ -763,48 +1817,49 @@ class App {
         // remove and dispose trail if present
         if(meteor.trail){ try{
           if(meteor.trail.line && meteor.trail.line.parent) this.scene.remove(meteor.trail.line);
-          // Safely dispose geometry and its attributes without assigning null directly
-          if(meteor.trail.geo){
-            try{
-              const attrs = meteor.trail.geo.attributes;
-              if(attrs){
-                Object.keys(attrs).forEach(k=>{ const a = attrs[k]; if(a && a.array) { /* allow GC by removing refs */ a.array = null; } });
-              }
-            }catch(inner){ /* ignore attribute scrub errors */ }
-            try{ meteor.trail.geo.dispose(); }catch(inner){ }
-          }
-          if(meteor.trail.line && meteor.trail.line.material) { try{ meteor.trail.line.material.dispose(); }catch(inner){} }
+          if(meteor.trail.geo) { if(meteor.trail.geo.attributes && meteor.trail.geo.attributes.position) meteor.trail.geo.attributes.position = null; meteor.trail.geo.dispose(); }
+          if(meteor.trail.line && meteor.trail.line.material) meteor.trail.line.material.dispose();
         }catch(e){ console.warn('Failed to remove trail', e); } }
 
         // remove label DOM element and from labels array
         try{ if(meteor.label && meteor.label.element && meteor.label.element.parentNode) meteor.label.element.parentNode.removeChild(meteor.label.element); }catch(e){}
         const li = this.labels.indexOf(meteor.label); if(li!==-1) this.labels.splice(li,1);
-
-        // null out references to allow GC
-        meteor.mesh = null; meteor.trail = null; meteor.label = null;
         this.impactCount++; const ic = document.getElementById('impactCount'); if(ic) ic.innerText = String(this.impactCount);
+      
+      if(r < this.earthRadius + 0.2){
+        meteor.active = false;
+        this.createImpact(pos.clone());
+        
+        // Create explosion effect
         try{
           let speedAtImpact = meteor.physVelocity ? meteor.physVelocity.length() : (meteor.velocity ? meteor.velocity.length()*this.SCENE_SCALE : 0);
           const ke = 0.5 * (meteor.mass || 1) * speedAtImpact * speedAtImpact;
+          this.createExplosion(pos.clone(), ke);
+          
           const keTons = ke / 4.184e9;
-            const ie = document.getElementById('impactEnergy'); if(ie) ie.innerText = `${ke.toExponential(3)} J (~${keTons.toFixed(2)} kt)`;
-          // camera shake: map kinetic energy to amplitude (clamped)
-          try{
-            // scale down energy to a usable amplitude range
-            const amp = Math.min(0.8, Math.max(0.02, Math.log10(Math.max(ke,1)) - 6) * 0.08);
-            this.cameraShake.amplitude = Math.max(this.cameraShake.amplitude || 0, amp);
-            this.cameraShake.time = 0;
-          }catch(e){ /* ignore shake errors */ }
+          const ie = document.getElementById('impactEnergy'); if(ie) ie.innerText = `${ke.toExponential(3)} J (~${keTons.toFixed(2)} kt)`;
+          
+          // Update statistics
+          this.totalImpactEnergy += ke;
+          this.largestImpactEnergy = Math.max(this.largestImpactEnergy, ke);
+          this.impactCount++;
         }catch(e){ console.error('impact energy calc', e); const ie = document.getElementById('impactEnergy'); if(ie) ie.innerText = '-'; }
+        
+        this.scene.remove(meteor.mesh);
+        if(meteor.label && meteor.label.element && meteor.label.element.parentNode) meteor.label.element.parentNode.removeChild(meteor.label.element);
+        const li = this.labels.indexOf(meteor.label); if(li!==-1) this.labels.splice(li,1);
+        this.impactCount++; const ic = document.getElementById('impactCount'); if(ic) ic.innerText = String(this.impactCount);
+        
+        // Update stats
+        this.updateMeteorStats();
       }
     });
 
-    // impact effects
-    // animate impact effects (shock rings, dust, flash, damage rings)
+    // impact effects: reconstruct vertices so the ring stays flush with the globe and expands along the surface
     this.impactEffects.forEach(effect=>{
       effect.lifetime = (effect.lifetime || 0) + (0.016 * this.simSpeed);
       const tNorm = effect.lifetime / (effect.maxLifetime || 3.0);
-  if(effect.type === 'shock'){
+      if(effect.type === 'shock'){
         // expand ring
         const s = 1 + tNorm * 20 * this.simSpeed;
         if(effect.mesh) effect.mesh.scale.setScalar(s);
@@ -815,40 +1870,52 @@ class App {
         if(effect.dust){ effect.dust.scale.setScalar(1 + tNorm * 12); effect.dust.material.opacity = Math.max(0, 0.85 * (1 - tNorm)); }
         // damage rings fade slowly
         if(effect.damageRings){ effect.damageRings.forEach(r=>{ if(r.material) r.material.opacity = Math.max(0, r.material.opacity - 0.005*this.simSpeed); }); }
-  }
-      // surface explosion animation (scorch + ember points)
-      if(effect.type === 'surface' || effect.points){
-        const s = effect; s.life += 0.016*this.simSpeed;
-        const dt = 0.016 * this.simSpeed;
-        // update ember points positions in local group space
-        try{
-          const posArr = s.pGeo.attributes.position.array;
-          for(let j=0;j<s.velocities.length;j++){
-            const v = s.velocities[j];
-            posArr[j*3+0] += v.x * dt;
-            posArr[j*3+1] += v.y * dt;
-            posArr[j*3+2] += v.z * dt;
-            // simple drag
-            v.multiplyScalar(0.995 - dt*0.05);
-            // slight downward pull along -normal
-            if(s.normal) v.add(s.normal.clone().multiplyScalar(-9.8 * 0.01 * dt));
-          }
-          s.pGeo.attributes.position.needsUpdate = true;
-          if(s.points && s.points.material) s.points.material.opacity = Math.max(0, 1 - (s.life / s.maxLife));
-          if(s.scorch && s.scorch.material) s.scorch.material.opacity = Math.max(0, 0.75 * (1 - (s.life / s.maxLife)));
-        }catch(e){ /* ignore point update errors */ }
-        if(s.life > s.maxLife){ if(s.group && s.group.parent) this.scene.remove(s.group); if(s.scorch && s.scorch.parent) this.scene.remove(s.scorch); try{ if(s.pGeo) s.pGeo.dispose(); if(s.points && s.points.material) s.points.material.dispose(); }catch(_){} }
+        // ocean plume animation
+        if(effect.oceanPlume){
+          const p = effect.oceanPlume; p.life += 0.016*this.simSpeed; const g = p.group; g.position.add(new THREE.Vector3(0, p.riseSpeed * this.simSpeed, 0)); g.scale.multiplyScalar(1 + 0.02*this.simSpeed);
+          if(p.life > p.maxLife){ if(g.parent) this.scene.remove(g); delete effect.oceanPlume; }
+        }
+        // mushroom cloud animation
+        if(effect.mushroom){
+          const m = effect.mushroom; m.life += 0.016*this.simSpeed; // rise
+          m.group.position.add(new THREE.Vector3(0, m.riseSpeed * this.simSpeed, 0));
+          // grow cap and slightly expand stem
+          const capScale = 1 + (m.life / m.maxLife) * 4.0;
+          if(m.cap) m.cap.scale.setScalar(capScale);
+          if(m.stem) m.stem.scale.set(1, 1 + (m.life / m.maxLife) * 2.0, 1);
+          // fade over life
+          const o = Math.max(0, 0.95 * (1 - (m.life / m.maxLife)));
+          if(m.cap && m.cap.material) m.cap.material.opacity = o;
+          if(m.stem && m.stem.material) m.stem.material.opacity = Math.max(0.3, o);
+          if(m.life > m.maxLife){ if(m.group.parent) this.scene.remove(m.group); delete effect.mushroom; }
+        }
       }
-      // cleanup when lifetime exceeds
-      if(effect.lifetime > (effect.maxLifetime || 3.0)){
-        if(effect.mesh && effect.mesh.parent) this.scene.remove(effect.mesh);
-        if(effect.flash && effect.flash.parent) this.scene.remove(effect.flash);
-        if(effect.dust && effect.dust.parent) this.scene.remove(effect.dust);
-        if(effect.damageRings) effect.damageRings.forEach(r=>{ if(r.parent) this.scene.remove(r); });
+
+      // (spin is applied by rotating base positions; don't rotate the mesh itself)
+
+      if(effect.mesh.material.opacity <= 0){ if(effect.mesh.parent) effect.mesh.parent.remove(effect.mesh); }
+    });
+  // keep effects which still have visible ring or still have a mushroom group
+  this.impactEffects = this.impactEffects.filter(e => (e.mesh && e.mesh.material && e.mesh.material.opacity > 0) || (e.mushroomGroup));
+    // impact effects and burn effects
+    this.impactEffects.forEach(effect => {
+      if (effect.type === 'burn') {
+        effect.lifetime -= 0.02 * this.simSpeed;
+        effect.mesh.material.opacity = Math.max(0, effect.lifetime * 1.6);
+        if (effect.lifetime <= 0) {
+          this.scene.remove(effect.mesh);
+        }
+      } else {
+        effect.mesh.scale.addScalar(0.05 * this.simSpeed);
+        effect.mesh.material.opacity -= 0.02 * this.simSpeed;
+        if (effect.mesh.material.opacity <= 0) {
+          this.scene.remove(effect.mesh);
+        }
       }
     });
-    // remove fully expired effects
-    this.impactEffects = this.impactEffects.filter(e=> e.lifetime <= (e.maxLifetime || 3.0));
+    this.impactEffects = this.impactEffects.filter(e => 
+      e.mesh.material.opacity > 0 && (e.type !== 'burn' || e.lifetime > 0)
+    );
 
     this.meteors = this.meteors.filter(m=>m.active);
 
@@ -889,6 +1956,180 @@ class App {
     if(hitPos){ this.predictedImpactMarker.position.copy(hitPos); this.predictedImpactMarker.visible = true; } else { this.predictedImpactMarker.visible = false; }
   }
 
+  createImpact(position, size = 1){
+    // make a larger, size-dependent impact ring + mushroom
+    const normal = position.clone().normalize();
+
+  // Map meteor diameter (meters) to a visual size in scene units.
+  // Invert and compress the mapping so small meteors appear relatively larger and big meteors are less gigantic.
+  // This produces the behavior you requested: small meteors' rings/mushrooms are more visible, large meteors are visually tempered.
+  const sizeMeters = Math.max(0.01, size || 1);
+  // Map meteor diameter (meters) -> visual impact radius (scene units) using
+  // a smooth, non-linear interpolation so:
+  //  - very small meteors (~0.1 m) -> small impact (approx area of Ireland)
+  //  - medium meteors (~22-30 m) -> medium impact (approx area of Poland)
+  //  - very large meteors (~50 m) -> large impact (approx area of Algeria)
+  // We convert representative country areas -> equivalent circular radii (km) then to scene units
+  // (1 scene unit == 1000 km because SCENE_SCALE = 1e6 m / scene unit).
+  const MIN_MET = 0.1; // meters slider min
+  const MAX_MET = 50.0; // meters slider max
+  // Representative country areas (km^2) for visual anchors: Montenegro (small), Hungary (medium), Poland (large)
+  const AREA_MONTENEGRO = 13812; // km^2 (Montenegro)
+  const AREA_HUNGARY = 93030; // km^2 (Hungary)
+  const AREA_POLAND = 312679; // km^2 (Poland)
+  const radiusMontenegro = Math.sqrt(AREA_MONTENEGRO / Math.PI) / 1000.0;
+  const radiusHungary = Math.sqrt(AREA_HUNGARY / Math.PI) / 1000.0;
+  const radiusPoland = Math.sqrt(AREA_POLAND / Math.PI) / 1000.0;
+
+  // normalize input size (0..1)
+  const tRaw = (sizeMeters - MIN_MET) / (MAX_MET - MIN_MET);
+  const t = Math.max(0, Math.min(1, tRaw));
+  // bias so mid values map near Hungary
+  const gamma = 1.8;
+  const tAdj = Math.pow(t, gamma);
+  // interpolate between Montenegro and Poland radii (Hungary sits mid-range)
+  const visualBase = radiusMontenegro + (radiusPoland - radiusMontenegro) * tAdj;
+
+    // Create ring geometry sized relative to visualBase (larger inner/outer multipliers so rings read bigger)
+  const ringInner = visualBase * 0.35;
+  const ringOuter = visualBase * 1.05;
+    const ringSegs = Math.max(32, Math.floor(16 + visualBase * 64));
+    const geo = new THREE.RingGeometry(ringInner, ringOuter, ringSegs);
+    const mat = new THREE.MeshBasicMaterial({ color:0xff4400, side:THREE.DoubleSide, transparent:true, opacity:0.95, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: 1 });
+    const ring = new THREE.Mesh(geo, mat);
+
+    // orient ring so its plane is tangent to the sphere at the impact point
+    const up = new THREE.Vector3(0,1,0);
+    const quat = new THREE.Quaternion().setFromUnitVectors(up, normal);
+    ring.quaternion.copy(quat);
+    ring.position.copy(normal.clone().multiplyScalar(this.earthRadius));
+
+    // prepare base positions from geometry in ring-local plane coordinates and apply a random in-plane rotation
+    const basePositions = [];
+    const posAttr = geo.attributes.position;
+    const inPlaneAngle = Math.random() * Math.PI * 2;
+    const rotLocal = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1), inPlaneAngle);
+    for(let i=0;i<posAttr.count;i++){
+      const vx = posAttr.getX(i);
+      const vy = posAttr.getY(i);
+      const vz = posAttr.getZ(i);
+      const v = new THREE.Vector3(vx, vy, vz);
+      v.applyQuaternion(rotLocal);
+      basePositions.push(v);
+    }
+
+    // Make mesh have identity transform so we can write world-space positions directly into its geometry
+    ring.position.set(0,0,0);
+    ring.quaternion.identity();
+    this.scene.add(ring);
+
+    // compute orthonormal tangent basis (u,v) on the surface at the impact point
+    let u = new THREE.Vector3();
+    if (Math.abs(normal.x) < 0.9) u.set(1,0,0).cross(normal).normalize(); else u.set(0,1,0).cross(normal).normalize();
+    const v = normal.clone().cross(u).normalize();
+
+    // compute maximum base radius so we can scale dome height relative to ring size
+    let maxBaseRadius = 0;
+    for (let i=0;i<basePositions.length;i++){ const b = basePositions[i]; const br = Math.sqrt(b.x*b.x + b.y*b.y); if(br>maxBaseRadius) maxBaseRadius = br; }
+
+    // effect state for ring
+    const effect = {
+      mesh: ring,
+      axis: normal.clone(),
+      spin: (0.02 + Math.random() * 0.06) * (Math.random() < 0.5 ? 1 : -1),
+      center: position.clone(),
+      u: u,
+      v: v,
+      basePositions: basePositions,
+      scale: 1,
+      maxBaseRadius: maxBaseRadius,
+      domeHeight: Math.max(0.02, Math.min(2.0, maxBaseRadius * 0.75))
+    };
+
+    // --- mushroom cloud: build a higher-res, fluffy cap using multiple overlapping spheres (fluffs)
+    try{
+      const cloudBase = visualBase; // base radius for the cap
+      const mushroom = new THREE.Group();
+
+      // stem (short and stubby relative to cloudBase)
+      const stemRadius = cloudBase * 0.22;
+      const stemHeight = cloudBase * 0.9;
+      const stemGeo = new THREE.CylinderGeometry(Math.max(0.001, stemRadius*0.5), stemRadius, Math.max(0.01, stemHeight), 16, 1);
+      const stemMat = new THREE.MeshStandardMaterial({ color:0x333022, roughness:0.95, metalness:0.0, transparent:true, opacity:0.9, depthWrite:false });
+      const stem = new THREE.Mesh(stemGeo, stemMat);
+      stem.position.set(0, stemHeight*0.5, 0);
+      mushroom.add(stem);
+
+  // central cap: overlapping spheres to simulate fluff + a blended core for cohesion
+  const capMat = new THREE.MeshStandardMaterial({ color:0xCCAA88, roughness:0.92, metalness:0.0, transparent:true, opacity:0.96, depthWrite:false });
+  // blended core (slightly flattened, higher-res) to make silhouette cohesive
+  const core = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 20), capMat.clone());
+  core.scale.set(cloudBase*1.05, cloudBase*0.65, cloudBase*1.05);
+  core.position.set(0, stemHeight*0.9 + cloudBase*0.05, 0);
+  mushroom.add(core);
+
+  const capMain = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 20), capMat.clone());
+  capMain.scale.set(cloudBase*0.9, cloudBase*0.55, cloudBase*0.9);
+  capMain.position.set(0, stemHeight*0.9 + cloudBase*0.05, 0);
+  mushroom.add(capMain);
+
+      // side fluffs
+      // place fluffs tightly around the core with smaller sizes so they don't protrude too much
+      const fluffCount = Math.max(4, Math.floor(4 + cloudBase * 2));
+      for(let i=0;i<fluffCount;i++){
+        const a = (i / fluffCount) * Math.PI * 2 + (Math.random()*0.12-0.06);
+        const r = cloudBase * (0.18 + Math.random()*0.18); // tighter radial offsets
+        const x = Math.cos(a) * r;
+        const z = Math.sin(a) * r;
+        const y = stemHeight*0.9 + cloudBase*0.05 + (Math.random()*0.08-0.03);
+        const s = cloudBase * (0.22 + Math.random()*0.25); // smaller fluffs
+        const fluff = new THREE.Mesh(new THREE.SphereGeometry(1, 18, 12), capMat.clone());
+        fluff.scale.set(s, s*0.65, s);
+        fluff.position.set(x, y, z);
+        fluff.rotation.set(Math.random()*0.15, Math.random()*Math.PI, Math.random()*0.15);
+        mushroom.add(fluff);
+      }
+
+      // a few smaller top fluffs for a rounded crown
+      for(let j=0;j<3;j++){
+        const s = cloudBase * (0.20 + Math.random()*0.22);
+        const fluff = new THREE.Mesh(new THREE.SphereGeometry(1, 18, 12), capMat.clone());
+        fluff.scale.set(s, s*0.55, s);
+        fluff.position.set((Math.random()-0.5)*cloudBase*0.12, stemHeight*0.9 + cloudBase*0.16 + Math.random()*cloudBase*0.04, (Math.random()-0.5)*cloudBase*0.12);
+        mushroom.add(fluff);
+      }
+
+      // place mushroom on the surface and orient along normal
+      const surfacePos = position.clone().setLength(this.earthRadius + 0.001);
+      mushroom.position.copy(surfacePos);
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), normal.clone());
+      mushroom.quaternion.copy(q);
+  mushroom.scale.setScalar(0.85);
+      this.scene.add(mushroom);
+
+      // Ensure each mushroom material stores a base opacity so we can set a deterministic fade
+      mushroom.traverse(obj=>{
+        if(obj.material){
+          // make transparent if not already
+          obj.material.transparent = true;
+          // store original opacity on userData so we can fade to norm * base
+          obj.userData = obj.userData || {};
+          obj.userData._baseOpacity = (typeof obj.material.opacity === 'number') ? obj.material.opacity : 1.0;
+        }
+      });
+
+      // store animation params
+      effect.mushroomGroup = mushroom;
+      // make mushroom slow and longer lived; store a rise speed and a maximum lift above the surface
+      effect.mushroomLife = 4.0 + Math.min(10.0, visualBase * 6.0); // larger clouds live longer
+      // rise speed (scene units per second) - small and proportional to visualBase, tuned for subtlety
+      effect.mushroomRiseSpeed = Math.max(0.00005, visualBase * 0.02);
+      // maximum lift above the sphere surface (scene units) so mushroom never 'launches' to space
+      effect.mushroomMaxLift = Math.max(0.01, visualBase * 0.45);
+      effect.mushroomBaseScale = cloudBase;
+    }catch(e){ console.warn('mushroom creation failed', e); }
+
+    this.impactEffects.push(effect);
   createImpact(position, meteor){
     // Compute impact summary (approximate/visualization-oriented)
     const summary = this.computeImpactSummary(position, meteor);
@@ -1224,7 +2465,16 @@ class App {
       data.near_earth_objects.forEach(a=>{
         this.asteroidList = this.asteroidList || [];
         this.asteroidList.push(a);
-        const option = document.createElement('option'); option.value = a.id; option.textContent = `${a.name} (${a.estimated_diameter.meters.estimated_diameter_max.toFixed(0)} m)`; select.appendChild(option);
+        
+        // Calculate mid-size for display
+        const minSize = a.estimated_diameter.meters.estimated_diameter_min;
+        const maxSize = a.estimated_diameter.meters.estimated_diameter_max;
+        const midSize = (minSize + maxSize) / 2;
+        
+        const option = document.createElement('option'); 
+        option.value = a.id; 
+        option.textContent = `${a.name} (${midSize.toFixed(0)} m mid-size)`; 
+        select.appendChild(option);
       });
       this.neoPage = (this.neoPage||0) + 1;
       document.getElementById('asteroidData').innerHTML = `Fetched ${this.asteroidList.length} asteroids (page ${this.neoPage})`;
@@ -1239,16 +2489,44 @@ class App {
   }
 
   async spawnSelectedAsteroid(){
-    const select = document.getElementById('asteroidSelect'); if(!select.value) return alert('Select an asteroid');
+    const select = document.getElementById('asteroidSelect'); 
+    if(!select.value) return alert('Select an asteroid');
+    
     const details = await this.fetchAsteroidDetails(select.value) || (this.asteroidList||[]).find(a=>a.id===select.value);
     if(!details) return alert('Could not fetch asteroid details');
-    const size = details.estimated_diameter.meters.estimated_diameter_max;
+    
+    // Calculate mid-size from min and max diameter
+    const minSize = details.estimated_diameter.meters.estimated_diameter_min;
+    const maxSize = details.estimated_diameter.meters.estimated_diameter_max;
+    const midSize = (minSize + maxSize) / 2;
+    
     const approach = parseFloat(details.close_approach_data[0].miss_distance.kilometers);
     const velocity = parseFloat(details.close_approach_data[0].relative_velocity.kilometers_per_second);
-    document.getElementById('asteroidData').innerHTML = `<b>${details.name}</b><br>Diameter: ${size.toFixed(1)} m<br>Miss distance: ${approach.toFixed(0)} km<br>Velocity: ${velocity.toFixed(1)} km/s`;
+    
+    // Calculate realistic mass and properties
+    const density = 3000; // kg/m³ - typical asteroid density
+    const volume = (4/3) * Math.PI * Math.pow(midSize/2, 3);
+    const mass = density * volume;
+    const area = Math.PI * Math.pow(midSize/2, 2);
+    
+    // Update UI with detailed information
+    document.getElementById('asteroidData').innerHTML = `
+      <b>${details.name}</b><br>
+      Min Diameter: ${minSize.toFixed(1)} m<br>
+      Max Diameter: ${maxSize.toFixed(1)} m<br>
+      <b>Mid Diameter: ${midSize.toFixed(1)} m</b><br>
+      Miss distance: ${approach.toFixed(0)} km<br>
+      Velocity: ${velocity.toFixed(1)} km/s<br>
+      Mass: ${(mass/1000).toFixed(1)} tons
+    `;
+    
+    // Create meteor mesh
     const meteorGeo = new THREE.SphereGeometry(1, 16, 16);
-  const meteorMat = new THREE.MeshStandardMaterial({ color:0xaaaaaa, metalness:0.1, roughness:0.6 });
-  if(meteorTexture){ meteorMat.map = meteorTexture; meteorMat.needsUpdate = true; }
+    const meteorMat = new THREE.MeshStandardMaterial({ 
+      color: 0xaaaaaa, 
+      metalness: 0.1, 
+      roughness: 0.6 
+    });
     const meteor = new THREE.Mesh(meteorGeo, meteorMat);
     const approachMeters = approach * 1000;
     meteor.position.set(0,0, approachMeters / this.SCENE_SCALE);
@@ -1271,7 +2549,7 @@ class App {
     const trailGeo = new THREE.BufferGeometry();
     trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
     trailGeo.setDrawRange(0, 0);
-  const trailMat = new THREE.LineBasicMaterial({ color: this.trailsEnabled?0xff6600:0xffdd88, transparent: true, opacity: 0.95 });
+    const trailMat = new THREE.LineBasicMaterial({ color: 0xffdd88, transparent: true, opacity: 0.9 });
     const trailLine = new THREE.Line(trailGeo, trailMat);
     trailLine.frustumCulled = false;
     this.scene.add(trailLine);
@@ -1279,17 +2557,43 @@ class App {
   }catch(e){ trailObj = null; }
     // Frame camera to the spawned meteor: position the camera at a distance proportional to size
     try{
-      const distanceMeters = Math.max(size * 10, 1000); // aim for ~10x diameter or 1km min
+      const distanceMeters = Math.max(midSize * 10, 1000);
       const distanceScene = distanceMeters / this.SCENE_SCALE;
       const meteorWorldPos = meteor.position.clone();
-      // camera end position: along +Z from meteor so it looks toward the origin
       const endCamPos = meteorWorldPos.clone().add(new THREE.Vector3(0, distanceScene * 0.7, distanceScene * 1.2));
       this.frameCameraTo(meteorWorldPos, endCamPos, 1200);
-    }catch(e){ console.warn('Framing failed', e); }
-  // show size in UI
-  const selLabel = document.getElementById('asteroidData'); if(selLabel) selLabel.innerHTML += `<div>Spawned size: ${usedSize.toFixed(0)} m</div>`;
-    const physVel = dir.clone().multiplyScalar(velocity*1000);
-    this.meteors.push({ mesh:meteor, velocity:dir.multiplyScalar(velocity/50), physVelocity:physVel, active:true, mass, area, size: usedSize, trail: trailObj });
+    } catch(e) { 
+      console.warn('Framing failed', e); 
+    }
+    
+    // Convert velocity to scene units and create physics velocity
+    const dir = new THREE.Vector3(0, 0, -1).normalize();
+    const sceneVelocity = dir.multiplyScalar(velocity / 50); // Convert km/s to scene units
+    const physVelocity = dir.clone().multiplyScalar(velocity * 1000); // m/s for physics
+    
+    // Add meteor with all properties
+    const asteroidData = { 
+      mesh: meteor, 
+      velocity: sceneVelocity, 
+      physVelocity: physVelocity, 
+      active: true, 
+      mass, 
+      area, 
+      size: midSize,
+      burning: false,
+      burnIntensity: 0,
+      label,
+      asteroidData: details, // Store original asteroid data
+      entrySpeed: velocity * 1000, // m/s
+      energy: 0.5 * mass * Math.pow(velocity * 1000, 2)
+    };
+    
+    this.meteors.push(asteroidData);
+    this.lastMeteorData = asteroidData;
+    this.updateMeteorStats();
+    
+    // Create trajectory line
+    this.createTrajectoryLine(asteroidData);
   }
 
   loadHighResEarthTexture(){
