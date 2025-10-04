@@ -1212,8 +1212,10 @@ class App {
 
   // NASA fetchers kept as-is but bound to this
   async fetchAsteroidList(loadMore=false){
-    const apiKey = document.getElementById('apiKey')?.value.trim();
-    if(!apiKey) return alert('Enter NASA API key');
+  // allow a default embedded demo key when the input is empty
+  const inputEl = document.getElementById('apiKey');
+  const embeddedKey = 'tyDkKDFgPHzc0234keQtXNmITCpqnes8yMidsxhL';
+  const apiKey = (inputEl && inputEl.value && inputEl.value.trim()) ? inputEl.value.trim() : embeddedKey;
     if(!loadMore) { this.neoPage = 0; this.asteroidList = []; document.getElementById('asteroidSelect').innerHTML = ''; }
     try{
       const res = await fetch(`https://api.nasa.gov/neo/rest/v1/neo/browse?page=${this.neoPage||0}&size=20&api_key=${apiKey}`);
@@ -1230,8 +1232,10 @@ class App {
   }
 
   async fetchAsteroidDetails(id){
-    const apiKey = document.getElementById('apiKey')?.value.trim(); if(!apiKey) return null;
-    try{ const res = await fetch(`https://api.nasa.gov/neo/rest/v1/neo/${id}?api_key=${apiKey}`); return await res.json(); }catch(err){ console.error(err); return null; }
+  const inputEl2 = document.getElementById('apiKey');
+  const embeddedKey2 = 'tyDkKDFgPHzc0234keQtXNmITCpqnes8yMidsxhL';
+  const apiKey2 = (inputEl2 && inputEl2.value && inputEl2.value.trim()) ? inputEl2.value.trim() : embeddedKey2;
+  try{ const res = await fetch(`https://api.nasa.gov/neo/rest/v1/neo/${id}?api_key=${apiKey2}`); return await res.json(); }catch(err){ console.error(err); return null; }
   }
 
   async spawnSelectedAsteroid(){
@@ -1332,10 +1336,17 @@ class App {
 
   openImpactMap(lat, lon, summary){
     this._initImpactMapIfNeeded();
-    const win = document.getElementById('impact-map-window'); if(win) win.classList.remove('hidden');
+    const win = document.getElementById('impact-map-window');
+    if(win) win.classList.remove('hidden');
+    // ensure map is initialized and the container has correct size before manipulating view
     if(!this._impactMap) return;
     try{
-      this._impactMap.setView([lat, lon], 6);
+      // allow the browser to render the window then force Leaflet to recalc size
+      setTimeout(()=>{
+        try{ this._impactMap.invalidateSize(); }catch(e){}
+        // smooth fly to the location for nicer UX
+        try{ this._impactMap.flyTo([lat, lon], 6, { animate: true, duration: 1.2 }); }catch(e){ this._impactMap.setView([lat, lon], 6); }
+      }, 60);
       // remove old layers
       if(this._impactMap._impactLayer) this._impactMap.removeLayer(this._impactMap._impactLayer);
       const radiusMeters = (summary.craterDiameter_m || 100) / 2; // crude
@@ -1349,7 +1360,7 @@ class App {
       // use a heuristic population density (urban vs rural) based on radius
       const popDensity = Math.max(10, Math.min(10000, (summary.severeRadius_km>50?50:(summary.severeRadius_km*10))));
       const estimatedDeaths = Math.round((popDensity * affectedAreaKm2) * 0.02); // assume 2% mortality in area
-      const details = document.getElementById('impactMapDetails'); if(details) details.innerHTML = `<b>Location:</b> ${lat.toFixed(2)}°, ${lon.toFixed(2)}°<br><b>Crater:</b> ${(summary.craterDiameter_m/1000).toFixed(2)} km<br><b>Estimated fatalities:</b> ${estimatedDeaths.toLocaleString()}`;
+  const details = document.getElementById('impactMapDetails'); if(details) details.innerHTML = `<b>Location:</b> ${lat.toFixed(2)}°, ${lon.toFixed(2)}°<br><b>Crater:</b> ${(summary.craterDiameter_m/1000).toFixed(2)} km<br><b>Estimated fatalities:</b> ${estimatedDeaths.toLocaleString()}`;
     }catch(e){ console.warn('openImpactMap error', e); }
     // close button
     const closeBtn = document.getElementById('impact-map-close'); if(closeBtn) closeBtn.onclick = ()=>{ const w=document.getElementById('impact-map-window'); if(w) w.classList.add('hidden'); };
