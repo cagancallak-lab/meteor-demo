@@ -15,6 +15,10 @@
     <input type="range" id="speed" min="0.01" max="0.2" step="0.01" value="0.05">
     <div class="small">v <span id="speedVal">0.05</span></div>
 
+  <label>Meteor Size (m)</label>
+  <input type="range" id="meteorSize" min="0.1" max="200" step="0.1" value="1">
+  <div class="small">size <span id="meteorSizeVal">1.00</span></div>
+
       <div class="ui-title">Meteor Impact Simulator</div>
 
     <div class="button-row">
@@ -90,6 +94,9 @@
       </div>
       <div class="window-body" id="impactPanelContent" style="overflow:auto; max-height:280px; padding:6px; background:transparent"></div>
     </div>
+  <!-- Leaflet for Impact Map -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module" src="/main.js"></script>
 
     <!-- Options app window -->
@@ -107,6 +114,31 @@
         <label style="margin-top:8px;display:block">Meteor Size Keyboard Control: <input type="checkbox" id="opt-key-size"> (Use +/- keys)</label>
         <label style="margin-top:8px;display:block"><input type="range" id="opt-meteor-size-range" min="0.1" max="200" step="0.1" value="1"> Size</label>
       </div>
+    <!-- Extra options: wireframe, stars, color pickers -->
+    <div id="options-extra" style="display:none">
+      <label><input type="checkbox" id="opt-wireframe"> Earth's Wireframe</label>
+      <label><input type="checkbox" id="opt-stars" checked> Sliding Stars Scenery</label>
+      <label style="margin-top:6px;display:block">UI Color: <input type="color" id="opt-ui-color" value="#0b0b0b"></label>
+      <label style="margin-top:6px;display:block">Button Color: <input type="color" id="opt-button-color" value="#111111"></label>
     </div>
+
+    <!-- Impact Location window -->
+    <div id="impact-location-window" class="window small hidden">
+      <div class="titlebar"><span class="title">Impact Location</span><div class="title-buttons"><button id="impactloc-close">X</button></div></div>
+      <div class="window-body" id="impactLocationContent">No impacts yet.</div>
+    </div>
+
+    <!-- Lider Space Teams label -->
+    <div id="lider-label" style="position:fixed;right:18px;top:8px;z-index:60;font-family:Tahoma;font-weight:700;color:#fff;">Lider Space Teams</div>
+    </div>
+
+  <!-- Impact Map Window -->
+  <div id="impact-map-window" class="window small hidden">
+    <div class="titlebar"><span class="title">Impact Map</span><div class="title-buttons"><button id="impact-map-close">X</button></div></div>
+    <div class="window-body" style="padding:0;">
+      <div id="impactMapContainer" style="width:360px;height:260px"></div>
+      <div id="impactMapDetails" style="padding:8px;font-size:13px;color:#fff;background:rgba(0,0,0,0.6)"></div>
+    </div>
+  </div>
 </body>
 </html>

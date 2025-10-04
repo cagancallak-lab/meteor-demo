@@ -41,6 +41,8 @@ class App {
   // Visual scaling factor for meteors (multiplies the scene scale conversion so meteors are visible)
   // Increase if meteors appear too small. This does not change physics, only mesh size.
   this.meteorVisualScale = 2000;
+  // enlarge meteors for visibility
+  this.meteorVisualScale = 6000;
 
     this.mouse = new THREE.Vector2();
     this.raycaster = new THREE.Raycaster();
@@ -52,6 +54,17 @@ class App {
     this.cameraFrame = { active: false };
     // camera shake state
     this.cameraShake = { amplitude: 0, decay: 0.95, frequency: 20, time: 0 };
+  }
+
+  // starfield initialization: a large Points cloud that slowly translates to simulate movement
+  _initStarfield(){
+    const starsCount = 2000;
+    const positions = new Float32Array(starsCount * 3);
+    for(let i=0;i<starsCount;i++){ positions[i*3+0] = (Math.random()*2-1)*200; positions[i*3+1] = (Math.random()*2-1)*200; positions[i*3+2] = -Math.random()*400; }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(positions,3));
+    const mat = new THREE.PointsMaterial({ color:0xffffff, size:0.7, transparent:true });
+    this.starfield = new THREE.Points(g, mat); this.starfield.frustumCulled=false; this.scene.add(this.starfield);
+    this.showStars = true;
   }
 
   // Rough deterministic land/ocean test: use spherical coordinates and a noise-ish function
@@ -159,11 +172,11 @@ class App {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
 
     // Earth
-    const earthGeo = new THREE.SphereGeometry(this.earthRadius, 32, 32);
-    const earthMat = new THREE.MeshPhongMaterial({ color: 0x2233ff });
-    const earth = new THREE.Mesh(earthGeo, earthMat);
-    this.scene.add(earth);
-    this.createLabel('Earth', new THREE.Vector3(0, this.earthRadius + 0.2, 0));
+  const earthGeo = new THREE.SphereGeometry(this.earthRadius, 64, 64);
+  const earthMat = new THREE.MeshPhongMaterial({ color: 0x2233ff });
+  this.earth = new THREE.Mesh(earthGeo, earthMat);
+  this.scene.add(this.earth);
+  this.createLabel('Earth', new THREE.Vector3(0, this.earthRadius + 0.2, 0));
 
   // Lighting: ambient + hemisphere + directional (sun) — but we do not add a visible Sun mesh
   this.scene.add(new THREE.AmbientLight(0xffffff, 0.28));
@@ -176,6 +189,9 @@ class App {
   this.scene.add(dirLight);
     const cameraLight = new THREE.PointLight(0xffeecc, 1.0, 100);
     this.camera.add(cameraLight);
+
+  // starfield (sliding stars scenery)
+  this._initStarfield();
 
     // cursor group
     this.cursor = new THREE.Group();
@@ -218,6 +234,8 @@ class App {
     window.addEventListener('resize', () => this.onWindowResize());
     window.addEventListener('mousemove', (e) => this.onMouseMove(e));
     window.addEventListener('keydown', (e) => this.onKeyDown(e));
+  // impact location close handler
+  const impactLocClose = document.getElementById('impactloc-close'); if(impactLocClose) impactLocClose.onclick = ()=>{ const w=document.getElementById('impact-location-window'); if(w) w.classList.add('hidden'); };
 
     // wire basic UI elements safely
     const el = id => document.getElementById(id);
@@ -287,6 +305,11 @@ class App {
     if(optReal) optReal.onchange = (e)=>{ this.realistic = !!e.target.checked; };
     if(optMoonCraters) optMoonCraters.onchange = (e)=>{ this.moonCraters = !!e.target.checked; if(this.moonCraters) this._ensureMoonCraters(); };
     if(optSizeRange) optSizeRange.oninput = (e)=>{ const v=parseFloat(e.target.value); const ms = document.getElementById('meteorSize'); if(ms) ms.value = v; };
+
+  // wire UI color pickers
+  const uiColor = document.getElementById('opt-ui-color'); const btnColor = document.getElementById('opt-button-color');
+  if(uiColor) uiColor.oninput = (e)=>{ const u = document.getElementById('ui'); if(u) u.style.background = e.target.value; };
+  if(btnColor) btnColor.oninput = (e)=>{ document.querySelectorAll('#ui button, #taskbar-buttons button, .titlebar .title-buttons button').forEach(b=>{ b.style.background = e.target.value; b.style.borderColor = e.target.value; }); };
 
     // keyboard control for meteor size (+/-)
     window.addEventListener('keydown', (ev)=>{
@@ -609,7 +632,7 @@ class App {
       const trailGeo = new THREE.BufferGeometry();
       trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
       trailGeo.setDrawRange(0, 0);
-      const trailMat = new THREE.LineBasicMaterial({ color: 0xffdd88, transparent: true, opacity: 0.9 });
+  const trailMat = new THREE.LineBasicMaterial({ color: this.trailsEnabled?0xff6600:0xffdd88, transparent: true, opacity: 0.95 });
       const trailLine = new THREE.Line(trailGeo, trailMat);
       trailLine.frustumCulled = false;
       this.scene.add(trailLine);
@@ -628,7 +651,16 @@ class App {
   resetScene() {
     this.meteors.forEach(m=>{ if(m.mesh) this.scene.remove(m.mesh); if(m.label && m.label.element) m.label.element.remove(); });
     this.meteors = [];
-    this.impactEffects.forEach(e=>{ if(e.mesh) this.scene.remove(e.mesh); });
+    // remove any lingering effect groups (scorch, groups, points, mushroom/plume)
+    this.impactEffects.forEach(e=>{
+      try{
+        if(e.group && e.group.parent) this.scene.remove(e.group);
+        if(e.mushroom && e.mushroom.group && e.mushroom.group.parent) this.scene.remove(e.mushroom.group);
+        if(e.oceanPlume && e.oceanPlume.group && e.oceanPlume.group.parent) this.scene.remove(e.oceanPlume.group);
+        if(e.scorch && e.scorch.parent) this.scene.remove(e.scorch);
+        if(e.points && e.points.parent) this.scene.remove(e.points);
+      }catch(_){}
+    });
     this.impactEffects = [];
     this.impactCount = 0; const ic = document.getElementById('impactCount'); if(ic) ic.innerText = '0';
   }
@@ -731,8 +763,17 @@ class App {
         // remove and dispose trail if present
         if(meteor.trail){ try{
           if(meteor.trail.line && meteor.trail.line.parent) this.scene.remove(meteor.trail.line);
-          if(meteor.trail.geo) { if(meteor.trail.geo.attributes && meteor.trail.geo.attributes.position) meteor.trail.geo.attributes.position = null; meteor.trail.geo.dispose(); }
-          if(meteor.trail.line && meteor.trail.line.material) meteor.trail.line.material.dispose();
+          // Safely dispose geometry and its attributes without assigning null directly
+          if(meteor.trail.geo){
+            try{
+              const attrs = meteor.trail.geo.attributes;
+              if(attrs){
+                Object.keys(attrs).forEach(k=>{ const a = attrs[k]; if(a && a.array) { /* allow GC by removing refs */ a.array = null; } });
+              }
+            }catch(inner){ /* ignore attribute scrub errors */ }
+            try{ meteor.trail.geo.dispose(); }catch(inner){ }
+          }
+          if(meteor.trail.line && meteor.trail.line.material) { try{ meteor.trail.line.material.dispose(); }catch(inner){} }
         }catch(e){ console.warn('Failed to remove trail', e); } }
 
         // remove label DOM element and from labels array
@@ -763,7 +804,7 @@ class App {
     this.impactEffects.forEach(effect=>{
       effect.lifetime = (effect.lifetime || 0) + (0.016 * this.simSpeed);
       const tNorm = effect.lifetime / (effect.maxLifetime || 3.0);
-      if(effect.type === 'shock'){
+  if(effect.type === 'shock'){
         // expand ring
         const s = 1 + tNorm * 20 * this.simSpeed;
         if(effect.mesh) effect.mesh.scale.setScalar(s);
@@ -774,25 +815,29 @@ class App {
         if(effect.dust){ effect.dust.scale.setScalar(1 + tNorm * 12); effect.dust.material.opacity = Math.max(0, 0.85 * (1 - tNorm)); }
         // damage rings fade slowly
         if(effect.damageRings){ effect.damageRings.forEach(r=>{ if(r.material) r.material.opacity = Math.max(0, r.material.opacity - 0.005*this.simSpeed); }); }
-        // ocean plume animation
-        if(effect.oceanPlume){
-          const p = effect.oceanPlume; p.life += 0.016*this.simSpeed; const g = p.group; g.position.add(new THREE.Vector3(0, p.riseSpeed * this.simSpeed, 0)); g.scale.multiplyScalar(1 + 0.02*this.simSpeed);
-          if(p.life > p.maxLife){ if(g.parent) this.scene.remove(g); delete effect.oceanPlume; }
-        }
-        // mushroom cloud animation
-        if(effect.mushroom){
-          const m = effect.mushroom; m.life += 0.016*this.simSpeed; // rise
-          m.group.position.add(new THREE.Vector3(0, m.riseSpeed * this.simSpeed, 0));
-          // grow cap and slightly expand stem
-          const capScale = 1 + (m.life / m.maxLife) * 4.0;
-          if(m.cap) m.cap.scale.setScalar(capScale);
-          if(m.stem) m.stem.scale.set(1, 1 + (m.life / m.maxLife) * 2.0, 1);
-          // fade over life
-          const o = Math.max(0, 0.95 * (1 - (m.life / m.maxLife)));
-          if(m.cap && m.cap.material) m.cap.material.opacity = o;
-          if(m.stem && m.stem.material) m.stem.material.opacity = Math.max(0.3, o);
-          if(m.life > m.maxLife){ if(m.group.parent) this.scene.remove(m.group); delete effect.mushroom; }
-        }
+  }
+      // surface explosion animation (scorch + ember points)
+      if(effect.type === 'surface' || effect.points){
+        const s = effect; s.life += 0.016*this.simSpeed;
+        const dt = 0.016 * this.simSpeed;
+        // update ember points positions in local group space
+        try{
+          const posArr = s.pGeo.attributes.position.array;
+          for(let j=0;j<s.velocities.length;j++){
+            const v = s.velocities[j];
+            posArr[j*3+0] += v.x * dt;
+            posArr[j*3+1] += v.y * dt;
+            posArr[j*3+2] += v.z * dt;
+            // simple drag
+            v.multiplyScalar(0.995 - dt*0.05);
+            // slight downward pull along -normal
+            if(s.normal) v.add(s.normal.clone().multiplyScalar(-9.8 * 0.01 * dt));
+          }
+          s.pGeo.attributes.position.needsUpdate = true;
+          if(s.points && s.points.material) s.points.material.opacity = Math.max(0, 1 - (s.life / s.maxLife));
+          if(s.scorch && s.scorch.material) s.scorch.material.opacity = Math.max(0, 0.75 * (1 - (s.life / s.maxLife)));
+        }catch(e){ /* ignore point update errors */ }
+        if(s.life > s.maxLife){ if(s.group && s.group.parent) this.scene.remove(s.group); if(s.scorch && s.scorch.parent) this.scene.remove(s.scorch); try{ if(s.pGeo) s.pGeo.dispose(); if(s.points && s.points.material) s.points.material.dispose(); }catch(_){} }
       }
       // cleanup when lifetime exceeds
       if(effect.lifetime > (effect.maxLifetime || 3.0)){
@@ -809,6 +854,11 @@ class App {
 
   // solar system update (if present)
   this.updateSolarSystem();
+  // update starfield motion
+  if(this.starfield && this.showStars){ this.starfield.position.z += 0.05 * this.simSpeed; if(this.starfield.position.z>50) this.starfield.position.z = -200; }
+
+  // apply wireframe toggle
+  if(this.earth){ const wf = document.getElementById('opt-wireframe'); if(wf && wf.checked) { this.earth.material.wireframe = true; } else if(this.earth.material.wireframe) this.earth.material.wireframe = false; }
 
   // update ultra explosion systems
   this.updateExplosionSystems();
@@ -857,7 +907,19 @@ class App {
       }
     }catch(e){ console.warn('Failed to update impact UI', e); }
 
-    // Also show in the top-right impact panel
+  // show location in the Impact Location window (top-right)
+  try{ const locWin = document.getElementById('impact-location-window'); const locContent = document.getElementById('impactLocationContent'); if(locWin && locContent){ locWin.classList.remove('hidden'); locContent.innerText = `Lat: ${ (Math.asin(position.y)*180/Math.PI).toFixed(2) }°, Lon: ${(Math.atan2(position.z, position.x)*180/Math.PI).toFixed(2)}°\nRegion: ${regionName}`; } }catch(e){}
+
+    // open impact map centered on this lat/lon and draw affected zone
+    try{
+      if(window.L && document.getElementById('impactMapContainer')){
+        const lat = (Math.asin(position.y))*180/Math.PI;
+        const lon = (Math.atan2(position.z, position.x))*180/Math.PI;
+        this.openImpactMap(lat, lon, summary);
+      }
+    }catch(e){ console.warn('Map open failed', e); }
+
+  // Also show in the top-right impact panel
     try{
       // old panel duplicate removed - we now use the top-right impact window
     }catch(e){ /* ignore panel errors */ }
@@ -932,42 +994,10 @@ class App {
       }catch(e){}
     }
 
-    // If surface is land, spawn a mushroom cloud effect; if ocean, spawn a water plume
-    if(surfaceIsOcean){
-      // ocean plume: taller, bluish, more spray
-      const plume = new THREE.Group();
-      plume.position.copy(normal.clone().multiplyScalar(this.earthRadius+0.02));
-      const plumeGeo = new THREE.ConeGeometry(0.02, 0.2, 16);
-      const plumeMat = new THREE.MeshStandardMaterial({ color:0x88aacc, transparent:true, opacity:0.9, roughness:1 });
-      const cone = new THREE.Mesh(plumeGeo, plumeMat);
-      cone.rotation.x = Math.PI/2;
-      plume.add(cone);
-      this.scene.add(plume);
-      impactEffect.oceanPlume = { group:plume, riseSpeed: 0.02 + (summary.size_m||1)/2000, life:0, maxLife:6 + (summary.size_m||1)/20 };
-    } else {
-      // mushroom cloud: stem + cap
-      const mush = new THREE.Group();
-      mush.position.copy(normal.clone().multiplyScalar(this.earthRadius+0.02));
-      // stem (cylinder)
-      const stemGeo = new THREE.CylinderGeometry(0.01, 0.02, 0.2, 12);
-      const stemMat = new THREE.MeshStandardMaterial({ color:0x332211, transparent:true, opacity:0.95 });
-      const stem = new THREE.Mesh(stemGeo, stemMat);
-      stem.position.y = 0.1;
-      mush.add(stem);
-      // cap (sphere that will expand)
-      const capGeo = new THREE.SphereGeometry(0.08, 16, 12);
-      const capMat = new THREE.MeshStandardMaterial({ color:0xffaa66, transparent:true, opacity:0.95, roughness:1 });
-      const cap = new THREE.Mesh(capGeo, capMat);
-      cap.position.y = 0.22;
-      mush.add(cap);
-      // add some sprite clouds to cap if explosion texture exists
-      if(explosionTexture){
-        const s = new THREE.SpriteMaterial({ map: explosionTexture, color:0xffffff, transparent:true, opacity:0.95, depthWrite:false });
-        const sp = new THREE.Sprite(s); sp.scale.set(0.5,0.5,1); sp.position.set(0,0.22,0); mush.add(sp);
-      }
-      this.scene.add(mush);
-      impactEffect.mushroom = { group:mush, stem, cap, riseSpeed: 0.02 + (summary.size_m||1)/1000, life:0, maxLife:10 + (summary.size_m||1)/10 };
-    }
+    // Spawn a surface explosion effect (replaces previous mushroom/cone effects)
+    try{
+      this.spawnSurfaceExplosion(shock.position.clone(), summary, normal.clone().normalize());
+    }catch(e){ console.warn('spawnSurfaceExplosion failed', e); }
 
     // camera shake scaling: stronger for bigger meteors / higher KE
     try{
@@ -1048,6 +1078,12 @@ class App {
     this.scene.add(group);
   }
 
+  // Spawn an oversized mushroom cloud for dramatic impacts (used for major land impacts)
+  spawnMushroomCloud(position, summary){
+    // Deprecated: forward to surface explosion instead (mushroom visuals removed)
+    try{ this.spawnSurfaceExplosion(position, summary, position.clone().normalize()); }catch(e){ console.warn('spawnMushroomCloud->spawnSurfaceExplosion failed', e); }
+  }
+
   // update explosion particle systems each frame
   updateExplosionSystems(){
     if(!this.explosions) return;
@@ -1089,6 +1125,35 @@ class App {
         this.explosions.splice(i,1);
       }
     }
+  }
+
+  // Surface explosion: compact burst suitable for Earth impacts (scorch ring + small embers)
+  spawnSurfaceExplosion(position, summary, normal){
+    try{
+      const effGroup = new THREE.Group(); effGroup.position.copy(position);
+      // scorch ring
+      const scorchR = Math.max(0.02, (summary.craterDiameter_m || 10) / this.SCENE_SCALE / 200);
+      const rg = new THREE.RingGeometry(scorchR*0.9, scorchR*1.1, 64);
+      const rm = new THREE.MeshBasicMaterial({ color: 0x222222, transparent:true, opacity:0.75, side:THREE.DoubleSide });
+      const scorch = new THREE.Mesh(rg, rm);
+      const q = new THREE.Quaternion(); q.setFromUnitVectors(new THREE.Vector3(0,1,0), normal || new THREE.Vector3(0,1,0));
+      scorch.quaternion.copy(q);
+      scorch.position.copy(position);
+      this.scene.add(scorch);
+
+      // ember particles (Points)
+      const pcount = Math.min(300, Math.floor(40 + (summary.TNT_tons||0) * 0.1));
+      const posArr = new Float32Array(pcount*3);
+      const vel = [];
+      for(let i=0;i<pcount;i++){ posArr[i*3+0]=0; posArr[i*3+1]=0; posArr[i*3+2]=0; const d = new THREE.Vector3((Math.random()*2-1),(Math.random()*1.5),(Math.random()*2-1)).normalize().multiplyScalar(0.5+Math.random()*3); vel.push(d); }
+      const pGeo = new THREE.BufferGeometry(); pGeo.setAttribute('position', new THREE.BufferAttribute(posArr,3));
+      const pMat = new THREE.PointsMaterial({ size:0.02, color:0xffcc88, transparent:true });
+      const points = new THREE.Points(pGeo, pMat); effGroup.add(points);
+      this.scene.add(effGroup);
+
+      const effect = { type:'surface', scorch, group:effGroup, points, pGeo, velocities:vel, life:0, maxLife:6, normal: normal };
+      this.impactEffects.push(effect);
+    }catch(e){ console.warn('spawnSurfaceExplosion error', e); }
   }
 
   // Compute approximate impact metrics for visualization
@@ -1202,7 +1267,7 @@ class App {
     const trailGeo = new THREE.BufferGeometry();
     trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
     trailGeo.setDrawRange(0, 0);
-    const trailMat = new THREE.LineBasicMaterial({ color: 0xffdd88, transparent: true, opacity: 0.9 });
+  const trailMat = new THREE.LineBasicMaterial({ color: this.trailsEnabled?0xff6600:0xffdd88, transparent: true, opacity: 0.95 });
     const trailLine = new THREE.Line(trailGeo, trailMat);
     trailLine.frustumCulled = false;
     this.scene.add(trailLine);
@@ -1255,6 +1320,40 @@ class App {
   }
 
   onWindowResize(){ if(!this.camera||!this.renderer) return; this.camera.aspect = window.innerWidth/window.innerHeight; this.camera.updateProjectionMatrix(); this.renderer.setSize(window.innerWidth, window.innerHeight); }
+  // Impact map helpers (Leaflet)
+  _initImpactMapIfNeeded(){
+    if(this._impactMap) return;
+    try{
+      const container = document.getElementById('impactMapContainer'); if(!container) return;
+      this._impactMap = L.map(container).setView([0,0], 2);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(this._impactMap);
+    }catch(e){ console.warn('Leaflet init failed', e); this._impactMap = null; }
+  }
+
+  openImpactMap(lat, lon, summary){
+    this._initImpactMapIfNeeded();
+    const win = document.getElementById('impact-map-window'); if(win) win.classList.remove('hidden');
+    if(!this._impactMap) return;
+    try{
+      this._impactMap.setView([lat, lon], 6);
+      // remove old layers
+      if(this._impactMap._impactLayer) this._impactMap.removeLayer(this._impactMap._impactLayer);
+      const radiusMeters = (summary.craterDiameter_m || 100) / 2; // crude
+      const circle = L.circle([lat, lon], { radius: radiusMeters, color:'#ff6600', fillColor:'#ff6600', fillOpacity:0.2 });
+      const marker = L.marker([lat, lon]);
+      marker.addTo(this._impactMap);
+      circle.addTo(this._impactMap);
+      this._impactMap._impactLayer = L.layerGroup([marker, circle]).addTo(this._impactMap);
+      // estimate casualties (very rough): population density times affected area
+      const affectedAreaKm2 = Math.PI * Math.pow(radiusMeters/1000, 2);
+      // use a heuristic population density (urban vs rural) based on radius
+      const popDensity = Math.max(10, Math.min(10000, (summary.severeRadius_km>50?50:(summary.severeRadius_km*10))));
+      const estimatedDeaths = Math.round((popDensity * affectedAreaKm2) * 0.02); // assume 2% mortality in area
+      const details = document.getElementById('impactMapDetails'); if(details) details.innerHTML = `<b>Location:</b> ${lat.toFixed(2)}°, ${lon.toFixed(2)}°<br><b>Crater:</b> ${(summary.craterDiameter_m/1000).toFixed(2)} km<br><b>Estimated fatalities:</b> ${estimatedDeaths.toLocaleString()}`;
+    }catch(e){ console.warn('openImpactMap error', e); }
+    // close button
+    const closeBtn = document.getElementById('impact-map-close'); if(closeBtn) closeBtn.onclick = ()=>{ const w=document.getElementById('impact-map-window'); if(w) w.classList.add('hidden'); };
+  }
   
   // Build the initial text editor content (curated briefings)
   _buildEditorContent(){
